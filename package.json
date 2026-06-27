@@ -1,0 +1,33 @@
+{
+  "name": "doc-lok",
+  "version": "0.1.0",
+  "description": "Pre-prompt context condenser that caches remote Markdown links via SHA-256 lockfiles to reduce LLM token usage.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "doc-lok": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "llm",
+    "token",
+    "condense",
+    "markdown",
+    "lockfile",
+    "context",
+    "sha256"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.0"
+  }
+}
