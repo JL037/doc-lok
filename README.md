@@ -107,7 +107,8 @@ The compiled output is emitted to `dist/`. The CLI binary is
 
 ### Prerequisites
 
-- **Node.js ≥ 18** (uses native `node:https`, `node:crypto`, `structuredClone`)
+- **Node.js ≥ 18** (runtime — uses native `node:https`, `node:crypto`, `structuredClone`)
+- **Node.js ≥ 20.19** (development — vitest 4.x with rolldown requires `node:util.styleText`)
 - **TypeScript ≥ 5.4** (dev only, for building from source)
 
 No runtime dependencies. `doc-lok` ships with zero `dependencies` in
