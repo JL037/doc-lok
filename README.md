@@ -15,6 +15,7 @@
 - [Quick Start](#quick-start)
   - [CLI Usage](#cli-usage)
   - [Library Usage](#library-usage)
+  - [Agent Integration](#agent-integration)
 - [How It Works](#how-it-works)
   - [The Lockfile](#the-lockfile)
   - [Network Validation Strategy](#network-validation-strategy)
@@ -23,6 +24,7 @@
   - [Lockfile Resolution](#lockfile-resolution)
   - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
+  - [`checkMarkdown(filePath, lockfilePath?)`](#checkmarkdownfilepath-lockfilepath)
   - [`condenseMarkdown(filePath, lockfilePath?)`](#condensemarkdownfilepath-lockfilepath)
   - [`restoreMarkdown(filePath, lockfilePath?)`](#restoremarkdownfilepath-lockfilepath)
   - [`validateUrl(url, options)`](#validateurlurl-options)
@@ -165,16 +167,64 @@ This is a project. See the docs [https://example.com/docs](https://example.com/d
 ─────────────────────────────────────────
 ```
 
+### Agent Integration
+
+`doc-lok` provides two CLI flags designed for LLM agents and automated workflows:
+
+```bash
+# Check URL freshness without modifying the file (non-destructive)
+doc-lok README.md --check --json
+
+# Condense with structured JSON output (machine-readable)
+doc-lok README.md --json
+
+# Restore with structured JSON output
+doc-lok README.md --restore --json
+```
+
+**`--check` mode** validates all URLs, updates the lockfile, but does **not**
+rewrite the Markdown file. Returns diagnostics + full lockfile state so the
+agent can inspect SHAs and decide whether to condense.
+
+**`--json` flag** outputs a structured JSON object to stdout instead of raw
+Markdown + human-readable diagnostics. The schema:
+
+```json
+{
+  "mode": "check | condense | restore",
+  "output": "...",
+  "diagnostics": [{ "url": "...", "status": "cached|updated|error", "tokensSaved": 0, "message": "..." }],
+  "tokensSaved": 342,
+  "lockfilePath": "/path/to/doc-lok.json",
+  "lockfile": { "version": 1, "global_tokens_saved": 0, "urls": { ... } }
+}
+```
+
+On fatal errors with `--json`, the output is `{ "error": "message" }` with
+exit code 1.
+
+A **skill file** is included at `.windsurf/workflows/doc-lok.md` that teaches
+agents how to detect and use doc-lok automatically. See the full agent
+decision tree in that file.
+
 ### Library Usage
 
 ```typescript
-import { condenseMarkdown, restoreMarkdown } from "doc-lok";
+import { condenseMarkdown, restoreMarkdown, checkMarkdown } from "doc-lok";
+
+// Check URL freshness without modifying the file
+const check = await checkMarkdown("./README.md");
+for (const diag of check.diagnostics) {
+  console.log(`${diag.url}: ${diag.status}`);
+}
+console.log(check.lockfile);        // full lockfile state with SHAs
 
 // Condense
 const result = await condenseMarkdown("./README.md");
 console.log(result.output);         // condensed Markdown string
 console.log(result.tokensSaved);    // total tokens saved this run
 console.log(result.lockfilePath);   // path to the lockfile used
+console.log(result.lockfile);       // full lockfile state after run
 
 for (const diag of result.diagnostics) {
   console.log(`${diag.url}: ${diag.status} (${diag.tokensSaved} tok saved)`);
@@ -299,6 +349,29 @@ wins):
 
 ## API Reference
 
+### `checkMarkdown(filePath, lockfilePath?)`
+
+Validates all http(s) URLs in a Markdown file and updates the lockfile, but
+does **not** modify the Markdown file itself. Designed for agents and tools
+that need to check freshness before deciding whether to condense.
+
+```typescript
+import { checkMarkdown } from "doc-lok";
+
+const result = await checkMarkdown("./README.md");
+console.log(result.diagnostics);    // per-URL freshness status
+console.log(result.lockfile);       // full lockfile with SHAs + ETags
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | `string` | Yes | Path to the Markdown file. |
+| `lockfilePath` | `string` | No | Explicit lockfile path. |
+
+**Returns:** `Promise<CheckResult>`
+
 ### `condenseMarkdown(filePath, lockfilePath?)`
 
 Condenses a Markdown file by replacing unchanged remote **inline** links with an
@@ -387,6 +460,14 @@ interface CondenseResult {
   diagnostics: LinkDiagnostic[];
   tokensSaved: number;         // total saved this run
   lockfilePath: string;        // lockfile path used
+  lockfile: Lockfile;          // full lockfile state after run
+}
+
+interface CheckResult {
+  diagnostics: LinkDiagnostic[];
+  tokensSaved: number;         // potential savings if condensed
+  lockfilePath: string;        // lockfile path used
+  lockfile: Lockfile;          // full lockfile state
 }
 
 interface LinkDiagnostic {
@@ -436,12 +517,15 @@ MODES
 OPTIONS
   --lockfile <path>   Path to an explicit doc-lok.json lockfile.
   -q, --quiet         Suppress diagnostic output (stderr).
+  --json              Output structured JSON to stdout (machine-readable).
+  --check             Check URL freshness only — do not modify the file.
   -V, --version       Print version and exit.
   -h, --help          Show this help text.
 
 OUTPUT
   Resulting Markdown is written to stdout.
   Per-link diagnostics are written to stderr.
+  With --json, a structured JSON object is written to stdout instead.
 
 EXIT CODES
   0   Success (all links processed, some may have errors).
@@ -455,6 +539,16 @@ safe to pipe:
 
 ```bash
 doc-lok README.md --quiet | llm-prompter
+```
+
+**Agent-friendly JSON output:**
+
+```bash
+# Check freshness without modifying the file
+doc-lok README.md --check --json
+
+# Condense with structured JSON output
+doc-lok README.md --json
 ```
 
 ---
@@ -472,7 +566,7 @@ doc-lok/
 ├── src/
 │   ├── index.ts          # Public API re-exports for library consumers
 │   ├── cli.ts            # Terminal entry point (process.argv parser → stdout)
-│   ├── parser.ts         # Link extraction, validation orchestration, restore
+│   ├── parser.ts         # Link extraction, validation orchestration, restore, check
 │   ├── network.ts        # HEAD-first ETag fast-path → streamed SHA-256 GET
 │   └── state.ts          # Lockfile read/write, per-URL metadata, token estimation
 ├── test/
@@ -482,6 +576,8 @@ doc-lok/
 │   ├── parser-refs.test.ts  # Reference defs + restore (11 tests)
 │   ├── cli.test.ts       # CLI flags, exit codes (8 tests)
 │   ├── cli-restore.test.ts  # Restore CLI (3 tests)
+│   ├── cli-json.test.ts     # --json + --check CLI (8 tests)
+│   ├── checkMarkdown.test.ts  # checkMarkdown library API (6 tests)
 │   └── hashUrl.test.ts   # URL hashing (4 tests)
 ├── .github/workflows/
 │   └── ci.yml            # GitHub Actions: build + test on Node 18/20/22
@@ -496,9 +592,9 @@ doc-lok/
 |---|---|
 | `state.ts` | Manages `doc-lok.json` lifecycle: read, normalise, update entries, atomic write. Tracks `last_known_sha256`, `etag`, `token_cost_raw`, `token_cost_compressed`, `global_tokens_saved`. |
 | `network.ts` | HTTP validation engine. Phase 1: `HEAD` request to compare ETags (zero body transfer). Phase 2: streamed `GET` with incremental `crypto.createHash('sha256')` — chunks hashed and dropped, O(1) memory. |
-| `parser.ts` | Orchestrates the full pipeline: regex-scan for inline `[text](url)` and reference `[ref]: url` patterns, validate each unique URL via `network.ts`, update lockfile via `state.ts`, replace unchanged inline links with `<!-- doc-lok:cached#hash -->`. Also provides `restoreMarkdown()` to reverse the operation. |
-| `cli.ts` | `process.argv` parser (no external CLI library). Routes condensed Markdown to `stdout`, diagnostics to `stderr`. Exit codes: 0 (ok), 1 (fatal), 2 (arg error). |
-| `index.ts` | Barrel file re-exporting the public API surface for `import { condenseMarkdown } from "doc-lok"`. |
+| `parser.ts` | Orchestrates the full pipeline: regex-scan for inline `[text](url)` and reference `[ref]: url` patterns, validate each unique URL via `network.ts`, update lockfile via `state.ts`, replace unchanged inline links with `<!-- doc-lok:cached#hash -->`. Also provides `restoreMarkdown()` to reverse the operation and `checkMarkdown()` for non-destructive freshness checks. |
+| `cli.ts` | `process.argv` parser (no external CLI library). Routes condensed Markdown to `stdout`, diagnostics to `stderr`. Supports `--json` for structured agent-readable output and `--check` for non-destructive freshness checks. Exit codes: 0 (ok), 1 (fatal), 2 (arg error). |
+| `index.ts` | Barrel file re-exporting the public API surface for `import { condenseMarkdown, checkMarkdown } from "doc-lok"`. |
 
 ---
 
@@ -557,7 +653,7 @@ npm run clean        # remove dist/
 | Script | Command | Description |
 |---|---|---|
 | `build` | `tsc` | Compile TypeScript to `dist/` with declarations + source maps. |
-| `test` | `vitest run` | Run the full test suite (59 tests, 7 files). |
+| `test` | `vitest run` | Run the full test suite (73 tests, 9 files). |
 | `test:watch` | `vitest` | Run tests in watch mode during development. |
 | `start` | `node dist/cli.js` | Run the CLI directly (after build). |
 | `clean` | `rm -rf dist` | Remove build output. |
@@ -617,6 +713,7 @@ doc-lok docs/spec.md --quiet | cargo run --bin prompter
 - **Lockfile is per-project:** Each project directory gets its own `doc-lok.json`. There is no global cache. Use `--lockfile` or `DOC_LOK_LOCKFILE` to share a lockfile across projects.
 - **No authentication:** `doc-lok` does not send auth headers. Private/authenticated URLs will return 401/403 and be marked as errors.
 - **Restore uses URL as link text:** Markers are restored as `[url](url)` because the original `[text](url)` is not stored in the lockfile.
+- **`--check` still updates the lockfile:** While the Markdown file is not modified in check mode, the lockfile is still written with current SHA-256 / ETag metadata. This is intentional — the lockfile should always reflect the latest known state of remote resources.
 
 ---
 

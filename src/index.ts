@@ -5,8 +5,8 @@
  * projects (e.g. Mastra agents).
  */
 
-export { condenseMarkdown, restoreMarkdown } from "./parser.js";
-export type { CondenseResult, LinkDiagnostic } from "./parser.js";
+export { condenseMarkdown, restoreMarkdown, checkMarkdown } from "./parser.js";
+export type { CondenseResult, CheckResult, LinkDiagnostic } from "./parser.js";
 export { MARKER, COMPRESSED_MARKER_TOKENS } from "./parser.js";
 
 export {

@@ -63,6 +63,8 @@ export interface CondenseResult {
   tokensSaved: number;
   /** Path to the lockfile that was read/written. */
   lockfilePath: string;
+  /** Full lockfile state after this run (for agent / --json consumption). */
+  lockfile: Lockfile;
 }
 
 /**
@@ -159,6 +161,7 @@ export async function condenseMarkdown(
     diagnostics,
     tokensSaved: runTokensSaved,
     lockfilePath: resolvedLock,
+    lockfile,
   };
 }
 
@@ -224,6 +227,86 @@ function replaceLinks(
     }
     return full;
   });
+}
+
+/** Result returned by `checkMarkdown` — validation only, no file modification. */
+export interface CheckResult {
+  /** Per-link diagnostics with freshness status. */
+  diagnostics: LinkDiagnostic[];
+  /** Total tokens that *would* be saved if condensed. */
+  tokensSaved: number;
+  /** Path to the lockfile that was read/written. */
+  lockfilePath: string;
+  /** Full lockfile state (so agents can inspect SHAs without a separate read). */
+  lockfile: Lockfile;
+}
+
+/**
+ * Check URL freshness in a Markdown file without modifying it.
+ *
+ * Validates every http(s) URL (inline + reference), updates the lockfile with
+ * current SHA-256 / ETag metadata, and returns diagnostics.  The Markdown file
+ * itself is never rewritten — this is a read-only probe designed for agents
+ * that need to know whether links are stale before deciding to condense.
+ *
+ * @param mdFilePath  Absolute or relative path to the `.md` file.
+ * @param lockfilePath  Optional explicit lockfile path.
+ */
+export async function checkMarkdown(
+  mdFilePath: string,
+  lockfilePath?: string,
+): Promise<CheckResult> {
+  const resolvedLock = resolveLockfilePath(mdFilePath, lockfilePath);
+  const lockfile = await readLockfile(resolvedLock);
+  const source = await fs.readFile(mdFilePath, "utf8");
+
+  const { inlineUrls, refUrls } = extractUniqueUrls(source);
+  const uniqueUrls = [...new Set([...inlineUrls, ...refUrls])];
+
+  const diagnostics: LinkDiagnostic[] = [];
+  let potentialTokensSaved = 0;
+
+  for (const url of uniqueUrls) {
+    const prev = lockfile.urls[url];
+    try {
+      const result = await validateUrl(url, {
+        knownEtag: prev?.etag ?? null,
+        knownSha256: prev?.last_known_sha256 ?? null,
+      });
+
+      const rawTokenCost =
+        result.tokenCost > 0 ? result.tokenCost : estimateTokens(url);
+      const { tokensSaved } = updateEntry(
+        lockfile,
+        url,
+        result.sha256,
+        result.etag,
+        rawTokenCost,
+      );
+
+      const status: LinkDiagnostic["status"] = result.unchanged
+        ? "cached"
+        : "updated";
+
+      if (inlineUrls.includes(url)) {
+        potentialTokensSaved += Math.max(0, tokensSaved);
+      }
+
+      diagnostics.push({ url, status, tokensSaved: Math.max(0, tokensSaved) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      diagnostics.push({ url, status: "error", tokensSaved: 0, message: msg });
+    }
+  }
+
+  await writeLockfile(resolvedLock, lockfile);
+
+  return {
+    diagnostics,
+    tokensSaved: potentialTokensSaved,
+    lockfilePath: resolvedLock,
+    lockfile,
+  };
 }
 
 /** Re-export the marker prefix for consumers that want to detect it. */
