@@ -3,13 +3,17 @@
  * cli.ts — Terminal entry point.
  *
  * Usage:
- *   doc-lok <path-to-file.md> [--lockfile <path>] [--quiet] [--version]
+ *   doc-lok <path-to-file.md> [mode] [options]
  *
- * Prints the condensed Markdown to stdout.  Diagnostics are written to
+ * Modes:
+ *   (default)             Condense — replace unchanged links with markers.
+ *   --restore             Inflate — replace markers back with original links.
+ *
+ * Prints the resulting Markdown to stdout.  Diagnostics are written to
  * stderr so they never pollute piped output.
  */
 
-import { condenseMarkdown } from "./parser.js";
+import { condenseMarkdown, restoreMarkdown } from "./parser.js";
 
 interface ParsedArgs {
   file: string | null;
@@ -17,6 +21,7 @@ interface ParsedArgs {
   quiet: boolean;
   help: boolean;
   version: boolean;
+  restore: boolean;
 }
 
 const VERSION = "0.1.0";
@@ -28,6 +33,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let quiet = false;
   let help = false;
   let version = false;
+  let restore = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -44,6 +50,9 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--quiet":
         quiet = true;
         break;
+      case "--restore":
+        restore = true;
+        break;
       case "--lockfile":
         lockfile = args[++i] ?? null;
         break;
@@ -57,7 +66,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  return { file, lockfile, quiet, help, version };
+  return { file, lockfile, quiet, help, version, restore };
 }
 
 function printHelp(): void {
@@ -65,7 +74,11 @@ function printHelp(): void {
     "doc-lok — pre-prompt context condenser",
     "",
     "USAGE",
-    "  doc-lok <path-to-file.md> [options]",
+    "  doc-lok <path-to-file.md> [mode] [options]",
+    "",
+    "MODES",
+    "  (default)             Condense — replace unchanged links with markers.",
+    "  --restore             Inflate — replace markers back with links.",
     "",
     "OPTIONS",
     "  --lockfile <path>   Path to an explicit doc-lok.json lockfile.",
@@ -74,7 +87,7 @@ function printHelp(): void {
     "  -h, --help          Show this help text.",
     "",
     "OUTPUT",
-    "  Condensed Markdown is written to stdout.",
+    "  Resulting Markdown is written to stdout.",
     "  Per-link diagnostics are written to stderr.",
   ].join("\n");
   console.error(text);
@@ -99,26 +112,42 @@ async function main(): Promise<void> {
   }
 
   try {
-    const result = await condenseMarkdown(args.file, args.lockfile ?? undefined);
-
-    // Condensed Markdown → stdout (pipe-friendly).
-    process.stdout.write(result.output);
-
-    if (!args.quiet) {
-      console.error(`\n─ doc-lok ──────────────────────────────`);
-      for (const d of result.diagnostics) {
-        const icon =
-          d.status === "cached" ? "✓" : d.status === "updated" ? "↻" : "✗";
-        const detail = d.message ? `  (${d.message})` : "";
-        console.error(
-          `  ${icon} ${d.url}  [${d.status}]  saved ${d.tokensSaved} tok${detail}`,
-        );
-      }
-      console.error(
-        `  Total tokens saved this run: ${result.tokensSaved}`,
+    if (args.restore) {
+      const result = await restoreMarkdown(
+        args.file,
+        args.lockfile ?? undefined,
       );
-      console.error(`  Lockfile: ${result.lockfilePath}`);
-      console.error(`─────────────────────────────────────────\n`);
+      process.stdout.write(result.output);
+
+      if (!args.quiet) {
+        console.error(`\n─ doc-lok restore ──────────────────────`);
+        console.error(`  Restored ${result.restoredCount} link(s)`);
+        console.error(`  Lockfile: ${result.lockfilePath}`);
+        console.error(`─────────────────────────────────────────\n`);
+      }
+    } else {
+      const result = await condenseMarkdown(
+        args.file,
+        args.lockfile ?? undefined,
+      );
+
+      // Condensed Markdown → stdout (pipe-friendly).
+      process.stdout.write(result.output);
+
+      if (!args.quiet) {
+        console.error(`\n─ doc-lok ──────────────────────────────`);
+        for (const d of result.diagnostics) {
+          const icon =
+            d.status === "cached" ? "✓" : d.status === "updated" ? "↻" : "✗";
+          const detail = d.message ? `  (${d.message})` : "";
+          console.error(
+            `  ${icon} ${d.url}  [${d.status}]  saved ${d.tokensSaved} tok${detail}`,
+          );
+        }
+        console.error(`  Total tokens saved this run: ${result.tokensSaved}`);
+        console.error(`  Lockfile: ${result.lockfilePath}`);
+        console.error(`─────────────────────────────────────────\n`);
+      }
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

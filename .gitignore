@@ -44,6 +44,9 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Manual test fixtures (not part of committed test suite)
+test-fixture/
+
 # Misc
 .cache/
 .temp/

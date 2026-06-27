@@ -3,6 +3,7 @@
  * cryptographic metadata so unchanged remote resources can be skipped.
  */
 
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
@@ -40,8 +41,8 @@ const DEFAULT_LOCKFILE: Lockfile = {
 /** Rough tokens-per-character heuristic (≈4 chars/token for English text). */
 export const CHARS_PER_TOKEN = 4;
 
-/** The condensed marker occupies ~15 tokens including delimiters. */
-export const COMPRESSED_MARKER_TOKENS = 15;
+/** The condensed marker occupies ~18 tokens including delimiters (now includes a 6-char URL hash). */
+export const COMPRESSED_MARKER_TOKENS = 18;
 
 /**
  * Resolve the lockfile path.  Resolution order:
@@ -91,7 +92,9 @@ export async function writeLockfile(
 function normalizeLockfile(input: Partial<Lockfile>): Lockfile {
   const version = typeof input.version === "number" ? input.version : 1;
   const global_tokens_saved =
-    typeof input.global_tokens_saved === "number" ? input.global_tokens_saved : 0;
+    typeof input.global_tokens_saved === "number"
+      ? input.global_tokens_saved
+      : 0;
   const urls = input.urls ?? {};
   return { version, global_tokens_saved, urls };
 }
@@ -100,6 +103,14 @@ function normalizeLockfile(input: Partial<Lockfile>): Lockfile {
 export function estimateTokens(text: string): number {
   if (text.length === 0) return 0;
   return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * Compute a short stable hash of a URL for marker embedding.
+ * Returns the first 6 hex characters of the SHA-256 digest.
+ */
+export function hashUrl(url: string): string {
+  return createHash("sha256").update(url).digest("hex").slice(0, 6);
 }
 
 /** Record a successful validation result against a lockfile entry. */
