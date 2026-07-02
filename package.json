@@ -27,6 +27,11 @@
     "context",
     "sha256"
   ],
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.14.0",

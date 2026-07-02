@@ -87,10 +87,11 @@ dramatically lowering API costs and improving prompt latency.
 
 ## Installation
 
-### From npm (when published)
+### From npm
 
 ```bash
-npm install doc-lok
+npm install -g doc-lok   # CLI
+npm install doc-lok      # library
 ```
 
 ### From source

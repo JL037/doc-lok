@@ -103,7 +103,7 @@ const { output, restoredCount, lockfilePath } =
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| 🔴 High | **npm publish** | Package is complete but not yet on the registry. |
+| ✅ Done | **npm publish** | Published as `doc-lok@0.1.0` on 2026-07-02. |
 | 🟡 Medium | **Custom HTTP headers** | `--header "Authorization: Bearer ..."` for private URLs. |
 | 🟡 Medium | **Watch mode** | `--watch` flag for iterative prompt development. |
 | 🟡 Medium | **Retry logic / rate limiting** | Single attempt only; no exponential backoff. |
