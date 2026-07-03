@@ -162,7 +162,7 @@ describe("estimateTokens", () => {
 });
 
 describe("updateEntry", () => {
-  it("adds a new URL entry and computes token savings", () => {
+  it("adds a new URL entry and computes token savings when unchanged", () => {
     const lockfile: Lockfile = {
       version: 1,
       global_tokens_saved: 0,
@@ -175,6 +175,7 @@ describe("updateEntry", () => {
       "sha256-abc",
       '"etag1"',
       100,
+      true, // isUnchanged
     );
 
     expect(entry.last_known_sha256).toBe("sha256-abc");
@@ -188,10 +189,10 @@ describe("updateEntry", () => {
     expect(lockfile.urls["https://example.com"]).toBe(entry);
   });
 
-  it("updates an existing entry and recomputes savings", () => {
+  it("returns 0 savings for an already-cached URL", () => {
     const lockfile: Lockfile = {
       version: 1,
-      global_tokens_saved: 0,
+      global_tokens_saved: 100, // already counted previously
       urls: {
         "https://example.com": {
           last_known_sha256: "old-sha",
@@ -199,6 +200,7 @@ describe("updateEntry", () => {
           token_cost_raw: 200,
           token_cost_compressed: COMPRESSED_MARKER_TOKENS,
           last_checked: "2024-01-01T00:00:00.000Z",
+          cached: true,
         },
       },
     };
@@ -206,16 +208,45 @@ describe("updateEntry", () => {
     const { tokensSaved } = updateEntry(
       lockfile,
       "https://example.com",
-      "new-sha",
-      '"new-etag"',
+      "old-sha", // same SHA = unchanged
+      '"old-etag"',
       200,
+      true, // isUnchanged
     );
 
-    expect(tokensSaved).toBe(200 - COMPRESSED_MARKER_TOKENS);
-    expect(lockfile.global_tokens_saved).toBe(200 - COMPRESSED_MARKER_TOKENS);
+    expect(tokensSaved).toBe(0); // already cached, no new savings
+    expect(lockfile.global_tokens_saved).toBe(100); // unchanged
     expect(lockfile.urls["https://example.com"].last_known_sha256).toBe(
-      "new-sha",
+      "old-sha",
     );
+  });
+
+  it("preserves the highest raw token cost across runs", () => {
+    const lockfile: Lockfile = {
+      version: 1,
+      global_tokens_saved: 0,
+      urls: {
+        "https://example.com": {
+          last_known_sha256: "old-sha",
+          etag: '"old-etag"',
+          token_cost_raw: 200, // full GET cost
+          token_cost_compressed: COMPRESSED_MARKER_TOKENS,
+          last_checked: "2024-01-01T00:00:00.000Z",
+        },
+      },
+    };
+
+    // Simulate a HEAD-only hit with tiny cost — should NOT overwrite the 200.
+    const { entry } = updateEntry(
+      lockfile,
+      "https://example.com",
+      "old-sha",
+      '"old-etag"',
+      5, // tiny HEAD estimate
+      true,
+    );
+
+    expect(entry.token_cost_raw).toBe(200); // preserved, not overwritten
   });
 
   it("never subtracts from global_tokens_saved on negative savings", () => {
@@ -231,11 +262,30 @@ describe("updateEntry", () => {
       "sha",
       null,
       5, // less than COMPRESSED_MARKER_TOKENS
+      true,
     );
 
-    expect(tokensSaved).toBe(5 - COMPRESSED_MARKER_TOKENS); // negative
-    expect(lockfile.global_tokens_saved).toBe(
-      100 + Math.max(0, 5 - COMPRESSED_MARKER_TOKENS),
+    expect(tokensSaved).toBe(0); // negative savings clamped to 0
+    expect(lockfile.global_tokens_saved).toBe(100); // unchanged
+  });
+
+  it("returns 0 savings for a changed (updated) URL", () => {
+    const lockfile: Lockfile = {
+      version: 1,
+      global_tokens_saved: 0,
+      urls: {},
+    };
+
+    const { tokensSaved } = updateEntry(
+      lockfile,
+      "https://example.com",
+      "sha",
+      null,
+      100,
+      false, // isUnchanged = false (content changed)
     );
+
+    expect(tokensSaved).toBe(0); // changed URLs are left intact, no savings
+    expect(lockfile.global_tokens_saved).toBe(0);
   });
 });

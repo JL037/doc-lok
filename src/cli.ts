@@ -27,7 +27,7 @@ interface ParsedArgs {
   restore: boolean;
 }
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.3";
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);

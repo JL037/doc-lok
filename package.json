@@ -1,6 +1,6 @@
 {
   "name": "doc-lok",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Pre-prompt context condenser that caches remote Markdown links via SHA-256 lockfiles to reduce LLM token usage.",
   "type": "module",
   "main": "dist/index.js",

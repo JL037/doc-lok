@@ -47,6 +47,9 @@ coverage/
 # Manual test fixtures (not part of committed test suite)
 test-fixture/
 
+# Demo / screenshot assets
+demo/
+
 # Misc
 .cache/
 .temp/

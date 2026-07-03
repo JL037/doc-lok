@@ -29,9 +29,7 @@ import {
   writeLockfile,
   type Lockfile,
 } from "./state.js";
-
-/** Regex capturing inline Markdown link syntax: `[label](url)`. */
-const INLINE_LINK_RE = /\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)/g;
+import { extractInlineLinks, extractRefDefs } from "./scanner.js";
 
 /**
  * Regex capturing reference-style link definitions:
@@ -39,9 +37,6 @@ const INLINE_LINK_RE = /\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)/g;
  *   [ref]: <https://example.com> "optional title"
  * Groups: 1=label, 2=url (may include angle brackets)
  */
-const REF_DEF_RE =
-  /^\[([^\]]+)\]:\s*<?(https?:\/\/[^>\s]+)>?(?:\s+"[^"]*"|\s+'[^']*'|\s*\([^)]*\))?(?=\s*$)/gm;
-
 /** HTML comment marker injected in place of unchanged inline links. */
 const MARKER = "<!-- doc-lok:cached";
 
@@ -76,19 +71,11 @@ function extractUniqueUrls(md: string): {
   inlineUrls: string[];
   refUrls: string[];
 } {
-  const inlineSet = new Set<string>();
-  let m: RegExpExecArray | null;
+  const inlineLinks = extractInlineLinks(md);
+  const inlineSet = new Set<string>(inlineLinks.map((l) => l.url));
 
-  INLINE_LINK_RE.lastIndex = 0;
-  while ((m = INLINE_LINK_RE.exec(md)) !== null) {
-    inlineSet.add(m[2]);
-  }
-
-  const refSet = new Set<string>();
-  REF_DEF_RE.lastIndex = 0;
-  while ((m = REF_DEF_RE.exec(md)) !== null) {
-    refSet.add(m[2]);
-  }
+  const refDefs = extractRefDefs(md);
+  const refSet = new Set<string>(refDefs.map((r) => r.url));
 
   return { inlineUrls: [...inlineSet], refUrls: [...refSet] };
 }
@@ -133,18 +120,19 @@ export async function condenseMarkdown(
         result.sha256,
         result.etag,
         rawTokenCost,
+        result.unchanged,
       );
 
       const status: LinkDiagnostic["status"] = result.unchanged
         ? "cached"
         : "updated";
 
-      // Only count token savings for inline links — reference defs are already cheap.
-      if (inlineUrls.includes(url)) {
-        runTokensSaved += Math.max(0, tokensSaved);
+      // Only count token savings for inline links that were actually cached.
+      if (inlineUrls.includes(url) && result.unchanged) {
+        runTokensSaved += tokensSaved;
       }
 
-      diagnostics.push({ url, status, tokensSaved: Math.max(0, tokensSaved) });
+      diagnostics.push({ url, status, tokensSaved });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       diagnostics.push({ url, status: "error", tokensSaved: 0, message: msg });
@@ -214,19 +202,34 @@ export async function restoreMarkdown(
  * Replace every `[text](url)` whose validation reported `unchanged: true`
  * with an HTML comment marker that embeds a short URL hash.
  *
- * The hash lets `restoreMarkdown()` unambiguously reconstruct the link.
+ * Uses exact byte positions from the scanner so links inside code blocks
+ * are never touched.
  */
 function replaceLinks(
   md: string,
   results: Map<string, ValidationResult>,
 ): string {
-  return md.replace(INLINE_LINK_RE, (full, _label: string, url: string) => {
-    const r = results.get(url);
+  const links = extractInlineLinks(md);
+  const replacements: Array<{ start: number; end: number; replacement: string }> = [];
+
+  for (const link of links) {
+    const r = results.get(link.url);
     if (r?.unchanged) {
-      return `${MARKER}#${hashUrl(url)} -->`;
+      replacements.push({
+        start: link.start,
+        end: link.end,
+        replacement: `${MARKER}#${hashUrl(link.url)} -->`,
+      });
     }
-    return full;
-  });
+  }
+
+  // Apply replacements from end to start so indices don't shift.
+  replacements.sort((a, b) => b.start - a.start);
+  let output = md;
+  for (const rep of replacements) {
+    output = output.slice(0, rep.start) + rep.replacement + output.slice(rep.end);
+  }
+  return output;
 }
 
 /** Result returned by `checkMarkdown` — validation only, no file modification. */
@@ -282,17 +285,18 @@ export async function checkMarkdown(
         result.sha256,
         result.etag,
         rawTokenCost,
+        result.unchanged,
       );
 
       const status: LinkDiagnostic["status"] = result.unchanged
         ? "cached"
         : "updated";
 
-      if (inlineUrls.includes(url)) {
-        potentialTokensSaved += Math.max(0, tokensSaved);
+      if (inlineUrls.includes(url) && result.unchanged) {
+        potentialTokensSaved += tokensSaved;
       }
 
-      diagnostics.push({ url, status, tokensSaved: Math.max(0, tokensSaved) });
+      diagnostics.push({ url, status, tokensSaved });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       diagnostics.push({ url, status: "error", tokensSaved: 0, message: msg });

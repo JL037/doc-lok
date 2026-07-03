@@ -19,6 +19,10 @@ export interface UrlEntry {
   token_cost_compressed: number;
   /** ISO-8601 timestamp of the last successful validation. */
   last_checked: string;
+  /** True once this URL has been successfully cached/condensed for the first time.
+   *  Used to prevent double-counting token savings in global_tokens_saved.
+   *  Absent in legacy lockfiles — treated as false on first read. */
+  cached?: boolean;
 }
 
 /** Top-level lockfile shape. */
@@ -113,30 +117,49 @@ export function hashUrl(url: string): string {
   return createHash("sha256").update(url).digest("hex").slice(0, 6);
 }
 
-/** Record a successful validation result against a lockfile entry. */
+/** Record a successful validation result against a lockfile entry.
+ *
+ * @param isUnchanged  Whether the remote content is unchanged since last run.
+ *                    When true, tokensSaved is 0 (already counted).
+ *                    When false, tokensSaved reflects first-time savings.
+ */
 export function updateEntry(
   lockfile: Lockfile,
   url: string,
   sha256: string,
   etag: string | null,
   rawTokenCost: number,
+  isUnchanged: boolean,
 ): { entry: UrlEntry; tokensSaved: number } {
   const prev = lockfile.urls[url];
   const compressed = COMPRESSED_MARKER_TOKENS;
-  const tokensSaved = prev
-    ? prev.token_cost_raw - compressed
-    : rawTokenCost - compressed;
+
+  // Preserve the highest raw cost we've seen.
+  // Never overwrite a full-GET cost with a tiny HEAD-only estimate.
+  const preservedRawCost =
+    prev && prev.token_cost_raw > rawTokenCost
+      ? prev.token_cost_raw
+      : rawTokenCost;
+
+  // Only count savings on the FIRST time a URL is successfully cached.
+  // After that, the savings were already counted in a previous run.
+  const wasAlreadyCached = prev?.cached === true;
+  const tokensSaved =
+    isUnchanged && !wasAlreadyCached
+      ? Math.max(0, preservedRawCost - compressed)
+      : 0;
 
   const entry: UrlEntry = {
     last_known_sha256: sha256,
     etag,
-    token_cost_raw: rawTokenCost,
+    token_cost_raw: preservedRawCost,
     token_cost_compressed: compressed,
     last_checked: new Date().toISOString(),
+    cached: wasAlreadyCached || isUnchanged,
   };
 
   lockfile.urls[url] = entry;
-  lockfile.global_tokens_saved += Math.max(0, tokensSaved);
+  lockfile.global_tokens_saved += tokensSaved;
 
   return { entry, tokensSaved };
 }
