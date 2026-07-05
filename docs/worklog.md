@@ -1,5 +1,40 @@
 # doc-lok — Development Worklog
 
+## 2026-07-03 — Code-Block-Aware Parsing, Honest Token Accounting, and Doc Sync
+
+### What was done
+1. **Code-block-aware Markdown scanning** in `src/scanner.ts`:
+   - New module tracks `normal`, `inlineCode`, `fencedCode`, and `indentedCode` states while walking Markdown line-by-line.
+   - Inline links inside inline code backticks, fenced ` ``` `/`~~~` blocks, and indented code blocks are **excluded** from condensing.
+   - `src/parser.ts` now uses `extractInlineLinks()` and `extractRefDefs()` from `scanner.ts`, replacing the naive global regex.
+2. **Honest token accounting** in `src/state.ts`:
+   - Added optional `cached` flag to `UrlEntry`.
+   - `updateEntry()` only counts `tokensSaved` the first time a URL is successfully cached, preventing double-counting across repeated runs.
+   - Preserves the highest `token_cost_raw` seen so a HEAD-only validation never downgrades a full-GET cost.
+3. **Updated documentation to match the v0.1.3 state**:
+   - `docs/status.md`: version `0.1.3`, 79 tests / 10 suites, 6 source modules, code-block parsing and agent CLI modes marked done, CI matrix Node 20/22.
+   - `README.md`: added `scanner.ts` to project structure and module responsibilities, documented code-block awareness, added `cached` field to lockfile types, corrected test count.
+   - `test/parser-codeblocks.test.ts`: removed stale "BUG — currently fails" describe title and misleading BUG comments now that the fix is in place.
+
+### Tests
+```
+Test Files  10 passed (10)
+     Tests  79 passed (79)
+```
+
+### Files changed / created
+| File | Action |
+|------|--------|
+| `src/scanner.ts` | Created — code-block-aware link extractor |
+| `src/parser.ts` | Uses `scanner.ts`; honest per-run token savings |
+| `src/state.ts` | Added `cached` flag and honest savings logic |
+| `test/parser-codeblocks.test.ts` | Created; stale BUG comments removed |
+| `docs/status.md` | Updated to v0.1.3 |
+| `docs/worklog.md` | Added this entry |
+| `README.md` | Updated project structure, types, and architecture notes |
+
+---
+
 ## 2026-06-27 — Comprehensive Documentation Update
 
 ### What was done

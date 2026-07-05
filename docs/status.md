@@ -6,12 +6,12 @@
 
 | Metric | Value |
 |--------|-------|
-| Version | `0.1.0` |
+| Version | `0.1.3` |
 | Runtime dependencies | **0** (built-in Node.js modules only) |
 | Dev dependencies | `typescript`, `@types/node`, `vitest` |
-| Source files | 5 modules (`cli.ts`, `index.ts`, `network.ts`, `parser.ts`, `state.ts`) |
-| Test coverage | **59 tests** across 7 suites |
-| CI/CD | GitHub Actions (Node 18 / 20 / 22) |
+| Source files | 6 modules (`cli.ts`, `index.ts`, `network.ts`, `parser.ts`, `scanner.ts`, `state.ts`) |
+| Test coverage | **79 tests** across 10 suites |
+| CI/CD | GitHub Actions (Node 20 / 22) |
 
 ---
 
@@ -35,6 +35,8 @@ It supports a **full round-trip**: condense → (edit/read) → restore.
 | Non-HTTP(S) | `[text](mailto:a@b.com)` | ❌ No — ignored | ❌ No |
 
 Reference definitions are **not condensed** because they are already token-cheap (just a URL) and removing them would break Markdown renderers that expect `[ref]` usage elsewhere in the document. They are still validated so the lockfile stays current.
+
+Links inside code spans or code blocks (inline backticks, fenced ` ``` ` / `~~~`, and indented blocks) are **ignored** — they are treated as code, not Markdown.
 
 ### Network Validation
 
@@ -71,14 +73,18 @@ The hash makes `restoreMarkdown()` unambiguous — even if 10 different URLs wer
 #### CLI
 ```bash
 # Condense (default)
-doc-lok <file.md> [--lockfile <path>] [--quiet] [--version] [--help]
+doc-lok <file.md> [--lockfile <path>] [--quiet] [--json] [--version] [--help]
 
 # Restore / inflate
-doc-lok <file.md> --restore [--lockfile <path>] [--quiet]
+doc-lok <file.md> --restore [--lockfile <path>] [--quiet] [--json]
+
+# Check URL freshness without modifying the file
+doc-lok <file.md> --check [--lockfile <path>] [--json]
 ```
 
 - Condensed/restored output → `stdout` (pipe-friendly)
 - Diagnostics → `stderr`
+- With `--json`, a structured JSON object is written to `stdout` instead
 - Exit codes: `0` (ok), `1` (fatal), `2` (arg error)
 
 #### Library API
@@ -95,7 +101,7 @@ const { output, restoredCount, lockfilePath } =
 ```
 
 #### Low-level utilities
-`validateUrl()`, `readLockfile()`, `writeLockfile()`, `estimateTokens()`, `updateEntry()`, `hashUrl()`
+`validateUrl()`, `readLockfile()`, `writeLockfile()`, `resolveLockfilePath()`, `estimateTokens()`, `updateEntry()`, `hashUrl()`
 
 ---
 
@@ -103,7 +109,10 @@ const { output, restoredCount, lockfilePath } =
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| ✅ Done | **npm publish** | Published as `doc-lok@0.1.0` on 2026-07-02. |
+| ✅ Done | **npm publish** | Latest `doc-lok@0.1.3` published 2026-07-03. |
+| ✅ Done | **Code-block-aware parsing** | `src/scanner.ts` skips links inside inline code, fenced blocks, and indented blocks. |
+| ✅ Done | **Agent CLI modes** | `--check` and `--json` flags for non-destructive, machine-readable output. |
+| ✅ Done | **Honest token accounting** | `cached` flag in lockfile prevents double-counting savings across runs. |
 | 🟡 Medium | **Custom HTTP headers** | `--header "Authorization: Bearer ..."` for private URLs. |
 | 🟡 Medium | **Watch mode** | `--watch` flag for iterative prompt development. |
 | 🟡 Medium | **Retry logic / rate limiting** | Single attempt only; no exponential backoff. |
@@ -133,7 +142,7 @@ npm install
 # Compile TypeScript
 npm run build
 
-# Run all tests
+# Run all tests (79 tests across 10 suites)
 npm test
 
 # Run tests in watch mode
@@ -144,6 +153,9 @@ node dist/cli.js path/to/file.md
 
 # Restore a condensed file
 node dist/cli.js path/to/condensed.md --restore
+
+# Check freshness without modifying the file
+node dist/cli.js path/to/file.md --check --json
 ```
 
 ---
@@ -157,3 +169,5 @@ node dist/cli.js path/to/condensed.md --restore
 - **Streamed hashing** — `crypto.createHash` fed per-chunk; memory stays flat even for multi-MB payloads.
 - **Hash-embedded markers** — `<!-- doc-lok:cached#abc123 -->` encodes a 6-char URL hash so restore is unambiguous even when the same marker appears multiple times for different URLs.
 - **Reference definitions stay put** — Already compact; removing them breaks Markdown rendering.
+- **Code-block-aware scanning** — `src/scanner.ts` tracks Markdown code state so links inside code spans/blocks are never condensed.
+- **Honest token accounting** — The lockfile tracks a `cached` flag per URL; savings are only counted the first time a link is successfully cached, preventing inflation across repeated runs.

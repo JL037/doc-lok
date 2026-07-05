@@ -58,14 +58,16 @@ eliminates that waste:
 
 1. It parses every external `http(s)` hyperlink in the document — both **inline**
    links `[text](url)` and **reference-style** definitions `[ref]: url`.
-2. It checks whether the remote content has changed since the last run using
+2. Links inside code spans or code blocks (inline backticks, fenced ` ``` `,
+   and indented blocks) are ignored so code examples stay intact.
+3. It checks whether the remote content has changed since the last run using
    a local `doc-lok.json` lockfile keyed on **SHA-256 hashes** and **ETags**.
-3. Unchanged inline links are replaced with a compact HTML comment marker:
+4. Unchanged inline links are replaced with a compact HTML comment marker:
    `<!-- doc-lok:cached#abc123 -->` (the hash makes restore unambiguous).
-4. Reference definitions are validated but left intact — they're already cheap
+5. Reference definitions are validated but left intact — they're already cheap
    and removing them would break Markdown rendering.
-5. Changed or new links are left intact so the LLM can see them.
-6. A **restore** command reverses the operation, turning markers back into links.
+6. Changed or new links are left intact so the LLM can see them.
+7. A **restore** command reverses the operation, turning markers back into links.
 
 This reduces context window consumption by up to **99.5%** per cached link,
 dramatically lowering API costs and improving prompt latency.
@@ -273,6 +275,7 @@ cryptographic metadata for every URL it has seen. The structure:
 | `urls[*].token_cost_raw` | Estimated token cost of the raw content. |
 | `urls[*].token_cost_compressed` | Token cost after condensing (always `18` — the hash-embedded marker size). |
 | `urls[*].last_checked` | ISO-8601 timestamp of the last successful validation. |
+| `urls[*].cached` | `true` once this URL has been successfully cached/condensed. Used to avoid double-counting `global_tokens_saved` across repeated runs. |
 
 The lockfile is written **atomically** (write-temp-then-rename) to prevent
 corruption from concurrent processes or crashes.
@@ -491,6 +494,7 @@ interface UrlEntry {
   token_cost_raw: number;
   token_cost_compressed: number;
   last_checked: string;        // ISO-8601
+  cached?: boolean;            // true once this URL has been successfully cached
 }
 
 interface ValidationResult {
@@ -569,6 +573,7 @@ doc-lok/
 │   ├── index.ts          # Public API re-exports for library consumers
 │   ├── cli.ts            # Terminal entry point (process.argv parser → stdout)
 │   ├── parser.ts         # Link extraction, validation orchestration, restore, check
+│   ├── scanner.ts        # Code-block-aware Markdown link extraction
 │   ├── network.ts        # HEAD-first ETag fast-path → streamed SHA-256 GET
 │   └── state.ts          # Lockfile read/write, per-URL metadata, token estimation
 ├── test/
@@ -576,6 +581,7 @@ doc-lok/
 │   ├── network.test.ts   # ETag, SHA-256, errors, timeout (9 tests)
 │   ├── parser.test.ts    # Inline link condensing (9 tests)
 │   ├── parser-refs.test.ts  # Reference defs + restore (11 tests)
+│   ├── parser-codeblocks.test.ts  # Code-block-aware link exclusion (4 tests)
 │   ├── cli.test.ts       # CLI flags, exit codes (8 tests)
 │   ├── cli-restore.test.ts  # Restore CLI (3 tests)
 │   ├── cli-json.test.ts     # --json + --check CLI (8 tests)
@@ -594,7 +600,8 @@ doc-lok/
 |---|---|
 | `state.ts` | Manages `doc-lok.json` lifecycle: read, normalise, update entries, atomic write. Tracks `last_known_sha256`, `etag`, `token_cost_raw`, `token_cost_compressed`, `global_tokens_saved`. |
 | `network.ts` | HTTP validation engine. Phase 1: `HEAD` request to compare ETags (zero body transfer). Phase 2: streamed `GET` with incremental `crypto.createHash('sha256')` — chunks hashed and dropped, O(1) memory. |
-| `parser.ts` | Orchestrates the full pipeline: regex-scan for inline `[text](url)` and reference `[ref]: url` patterns, validate each unique URL via `network.ts`, update lockfile via `state.ts`, replace unchanged inline links with `<!-- doc-lok:cached#hash -->`. Also provides `restoreMarkdown()` to reverse the operation and `checkMarkdown()` for non-destructive freshness checks. |
+| `scanner.ts` | Code-block-aware Markdown link extractor. Tracks normal text vs. inline code, fenced code blocks, and indented code blocks so links inside code are never condensed. Exposes `extractInlineLinks()` and `extractRefDefs()`. |
+| `parser.ts` | Orchestrates the full pipeline: scan for inline `[text](url)` and reference `[ref]: url` patterns via `scanner.ts`, validate each unique URL via `network.ts`, update lockfile via `state.ts`, replace unchanged inline links with `<!-- doc-lok:cached#hash -->`. Also provides `restoreMarkdown()` to reverse the operation and `checkMarkdown()` for non-destructive freshness checks. |
 | `cli.ts` | `process.argv` parser (no external CLI library). Routes condensed Markdown to `stdout`, diagnostics to `stderr`. Supports `--json` for structured agent-readable output and `--check` for non-destructive freshness checks. Exit codes: 0 (ok), 1 (fatal), 2 (arg error). |
 | `index.ts` | Barrel file re-exporting the public API surface for `import { condenseMarkdown, checkMarkdown } from "doc-lok"`. |
 
@@ -631,6 +638,21 @@ or timeout on one link produces a `✗` diagnostic but never aborts the
 entire run. The condensed output still includes all other successfully
 validated links.
 
+### Code-block-aware scanning
+
+`src/scanner.ts` walks through Markdown line-by-line and tracks whether it
+is inside inline code, a fenced code block, or an indented code block.
+Links inside code are never condensed, so documentation that contains
+`[example](https://example.com)` inside backticks or code fences stays
+readable and functional.
+
+### Honest token accounting
+
+Token savings are only counted the first time a URL is successfully
+cached. The lockfile stores a `cached` flag per URL, so running `doc-lok`
+repeatedly on the same file does not inflate `global_tokens_saved` with
+the same savings over and over.
+
 ### Atomic lockfile writes
 
 The lockfile is written via temp-file-then-rename (`fs.rename`), which is
@@ -655,7 +677,7 @@ npm run clean        # remove dist/
 | Script | Command | Description |
 |---|---|---|
 | `build` | `tsc` | Compile TypeScript to `dist/` with declarations + source maps. |
-| `test` | `vitest run` | Run the full test suite (73 tests, 9 files). |
+| `test` | `vitest run` | Run the full test suite (79 tests, 10 files). |
 | `test:watch` | `vitest` | Run tests in watch mode during development. |
 | `start` | `node dist/cli.js` | Run the CLI directly (after build). |
 | `clean` | `rm -rf dist` | Remove build output. |

@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 
 import { condenseMarkdown, MARKER } from "../src/parser.js";
 
-describe("Code block exclusion (BUG — currently fails)", () => {
+describe("Code block exclusion", () => {
   let tmpDir: string;
   let server: Server;
   let port: number;
@@ -49,7 +49,6 @@ describe("Code block exclusion (BUG — currently fails)", () => {
     // After a second run (cache warm), the marker should NOT appear inside backticks.
     const run2 = await condenseMarkdown(mdPath);
 
-    // BUG: currently the regex replaces the link even though it's inside inline code.
     expect(run2.output).not.toContain("`<!-- doc-lok:cached");
     expect(run2.output).toContain(`[bad](${url})`);
   });
@@ -66,7 +65,6 @@ describe("Code block exclusion (BUG — currently fails)", () => {
     const run2 = await condenseMarkdown(mdPath);
     const run3 = await condenseMarkdown(mdPath);
 
-    // BUG: currently replaces links inside fenced code blocks too.
     expect(run3.output).not.toContain("<!-- doc-lok:cached");
     expect(run3.output).toContain(`[bad](${url})`);
   });
