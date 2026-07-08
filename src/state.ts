@@ -23,6 +23,10 @@ export interface UrlEntry {
    *  Used to prevent double-counting token savings in global_tokens_saved.
    *  Absent in legacy lockfiles — treated as false on first read. */
   cached?: boolean;
+  /** Original anchor text from the inline link, stored so restore can
+   *  reconstruct `[text](url)` instead of `[url](url)`. Only present when the
+   *  anchor text differs from the URL. */
+  original_text?: string;
 }
 
 /** Top-level lockfile shape. */
@@ -37,7 +41,7 @@ export interface Lockfile {
 
 /** Default lockfile written when none exists yet. */
 const DEFAULT_LOCKFILE: Lockfile = {
-  version: 1,
+  version: 2,
   global_tokens_saved: 0,
   urls: {},
 };
@@ -150,6 +154,7 @@ export function updateEntry(
       : 0;
 
   const entry: UrlEntry = {
+    ...(prev ?? {}),
     last_known_sha256: sha256,
     etag,
     token_cost_raw: preservedRawCost,

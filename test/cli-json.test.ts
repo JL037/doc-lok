@@ -147,7 +147,7 @@ describe("CLI --json and --check", () => {
     const restoreParsed = JSON.parse(stdout);
     expect(restoreParsed.mode).toBe("restore");
     expect(restoreParsed.restoredCount).toBe(1);
-    expect(restoreParsed.output).toContain(`[${url}](${url})`);
+    expect(restoreParsed.output).toContain(`[Link](${url})`);
     expect(restoreParsed.lockfile).toBeDefined();
   });
 

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { createServer, type Server } from "node:http";
 
-import { condenseMarkdown, restoreMarkdown, MARKER } from "../src/parser.js";
+import { condenseMarkdown, restoreMarkdown, checkMarkdown, MARKER } from "../src/parser.js";
 
 describe("Reference-style link support", () => {
   let tmpDir: string;
@@ -147,13 +147,30 @@ describe("Reference-style link support", () => {
 
 describe("restoreMarkdown", () => {
   let tmpDir: string;
+  let server: Server;
+  let port: number;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "doc-lok-restore-test-"));
+
+    server = createServer((req, res) => {
+      const pathname = req.url!;
+      if (pathname === "/stable") {
+        res.setHeader("etag", '"stable"');
+        res.writeHead(200);
+        res.end("stable content");
+        return;
+      }
+      res.writeHead(200);
+      res.end("default");
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    port = (server.address() as any).port;
   });
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   async function writeMd(name: string, content: string): Promise<string> {
@@ -258,5 +275,125 @@ describe("restoreMarkdown", () => {
     const mdPath = await writeMd("simple.md", "# Hello\n");
     const result = await restoreMarkdown(mdPath);
     expect(result.lockfilePath).toBe(path.join(tmpDir, "doc-lok.json"));
+  });
+
+  it("restores the original anchor text when present in the lockfile", async () => {
+    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lock = {
+      version: 2,
+      global_tokens_saved: 100,
+      urls: {
+        "https://example.com": {
+          last_known_sha256: "abc",
+          etag: null,
+          token_cost_raw: 50,
+          token_cost_compressed: 18,
+          last_checked: "2024-01-01T00:00:00.000Z",
+          original_text: "Documentation",
+        },
+      },
+    };
+    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+
+    const { hashUrl } = await import("../src/state.js");
+    const hash = hashUrl("https://example.com");
+
+    const mdPath = await writeMd(
+      "condensed.md",
+      `# Hello\n\nVisit <!-- doc-lok:cached#${hash} --> for details.\n`,
+    );
+
+    const result = await restoreMarkdown(mdPath, lockPath);
+    expect(result.output).toContain("[Documentation](https://example.com)");
+    expect(result.output).not.toContain("doc-lok:cached");
+    expect(result.restoredCount).toBe(1);
+  });
+
+  it("falls back to URL as link text when original_text is absent", async () => {
+    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lock = {
+      version: 1,
+      global_tokens_saved: 100,
+      urls: {
+        "https://example.com": {
+          last_known_sha256: "abc",
+          etag: null,
+          token_cost_raw: 50,
+          token_cost_compressed: 18,
+          last_checked: "2024-01-01T00:00:00.000Z",
+        },
+      },
+    };
+    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+
+    const { hashUrl } = await import("../src/state.js");
+    const hash = hashUrl("https://example.com");
+
+    const mdPath = await writeMd(
+      "condensed-legacy.md",
+      `# Hello\n\nVisit <!-- doc-lok:cached#${hash} --> for details.\n`,
+    );
+
+    const result = await restoreMarkdown(mdPath, lockPath);
+    expect(result.output).toContain(
+      "[https://example.com](https://example.com)",
+    );
+    expect(result.restoredCount).toBe(1);
+  });
+
+  it("records anchor text during condense and restores it later", async () => {
+    const url = `http://localhost:${port}/stable`;
+    const mdPath = await writeMd(
+      "original.md",
+      `# Hello\n\nRead the [Documentation](${url}) for more info.\n`,
+    );
+
+    // First run warms the lockfile and stores original_text.
+    await condenseMarkdown(mdPath);
+    // Second run condenses the link.
+    const run2 = await condenseMarkdown(mdPath);
+    expect(run2.output).toContain(MARKER);
+
+    // Write the condensed output so restore has markers to inflate.
+    await fs.writeFile(mdPath, run2.output, "utf8");
+
+    const restored = await restoreMarkdown(mdPath);
+    expect(restored.output).toContain(`[Documentation](${url})`);
+    expect(restored.output).not.toContain(MARKER);
+    expect(restored.restoredCount).toBe(1);
+  });
+
+  it("preserves original_text across checkMarkdown runs", async () => {
+    const url = `http://localhost:${port}/stable`;
+    const mdPath = await writeMd(
+      "check-preserve.md",
+      `# Hello\n\nRead the [Docs](${url}).\n`,
+    );
+
+    await condenseMarkdown(mdPath);
+    await checkMarkdown(mdPath);
+
+    const restored = await restoreMarkdown(mdPath);
+    expect(restored.output).toContain(`[Docs](${url})`);
+  });
+
+  it("uses the last-seen anchor text when the same URL appears multiple times", async () => {
+    const url = `http://localhost:${port}/stable`;
+    const mdPath = await writeMd(
+      "multi-text.md",
+      `# Hello\n\n[A](${url}) and [B](${url}).\n`,
+    );
+
+    await condenseMarkdown(mdPath);
+    const run2 = await condenseMarkdown(mdPath);
+    expect(run2.output.match(new RegExp(MARKER, "g"))?.length).toBe(2);
+
+    // Write the condensed output so restore has markers to inflate.
+    await fs.writeFile(mdPath, run2.output, "utf8");
+
+    const restored = await restoreMarkdown(mdPath);
+    // Both markers restore with the last-seen text "B".
+    expect(restored.output).toContain(`[B](${url})`);
+    expect(restored.output).not.toContain(`[A](${url})`);
   });
 });

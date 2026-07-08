@@ -140,7 +140,7 @@ export async function condenseMarkdown(
   }
 
   // Rewrite the Markdown, replacing unchanged inline links with the marker.
-  const output = replaceLinks(source, results);
+  const output = replaceLinks(source, results, lockfile);
 
   await writeLockfile(resolvedLock, lockfile);
 
@@ -173,8 +173,7 @@ export async function restoreMarkdown(
 
   // Build url → originalLink map from lockfile entries.
   // We need to reconstruct what the original inline link looked like.
-  // Since the lockfile only stores the URL, we use the URL itself as the
-  // link text for restored links: [https://example.com](https://example.com).
+  // The lockfile stores the URL and, when available, the original anchor text.
   const urlByHash = new Map<string, string>();
   for (const [url] of Object.entries(lockfile.urls)) {
     urlByHash.set(hashUrl(url), url);
@@ -191,7 +190,8 @@ export async function restoreMarkdown(
         return _match;
       }
       restoredCount++;
-      return `[${url}](${url})`;
+      const text = lockfile.urls[url]?.original_text ?? url;
+      return `[${text}](${url})`;
     },
   );
 
@@ -203,11 +203,13 @@ export async function restoreMarkdown(
  * with an HTML comment marker that embeds a short URL hash.
  *
  * Uses exact byte positions from the scanner so links inside code blocks
- * are never touched.
+ * are never touched. Also records the original anchor text in the lockfile
+ * so restore can reconstruct `[text](url)` instead of `[url](url)`.
  */
 function replaceLinks(
   md: string,
   results: Map<string, ValidationResult>,
+  lockfile: Lockfile,
 ): string {
   const links = extractInlineLinks(md);
   const replacements: Array<{ start: number; end: number; replacement: string }> = [];
@@ -215,6 +217,13 @@ function replaceLinks(
   for (const link of links) {
     const r = results.get(link.url);
     if (r?.unchanged) {
+      // Preserve the original anchor text for restore, but only when it
+      // differs from the URL (avoids redundant lockfile growth).
+      const entry = lockfile.urls[link.url];
+      if (entry && link.text !== link.url) {
+        entry.original_text = link.text;
+      }
+
       replacements.push({
         start: link.start,
         end: link.end,

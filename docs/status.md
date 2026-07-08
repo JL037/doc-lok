@@ -1,6 +1,6 @@
 # doc-lok — Project Status
 
-> Last updated: 2026-06-27
+> Last updated: 2026-07-06
 
 ## At a Glance
 
@@ -10,7 +10,7 @@
 | Runtime dependencies | **0** (built-in Node.js modules only) |
 | Dev dependencies | `typescript`, `@types/node`, `vitest` |
 | Source files | 6 modules (`cli.ts`, `index.ts`, `network.ts`, `parser.ts`, `scanner.ts`, `state.ts`) |
-| Test coverage | **79 tests** across 10 suites |
+| Test coverage | **89 tests** across 10 suites |
 | CI/CD | GitHub Actions (Node 20 / 22) |
 
 ---
@@ -68,6 +68,14 @@ New: `<!-- doc-lok:cached#abc123 -->` (embeds 6-char SHA-256 hash of the URL)
 
 The hash makes `restoreMarkdown()` unambiguous — even if 10 different URLs were condensed in the same document, each marker knows exactly which URL it represents.
 
+### Redirect Following
+
+HTTP `301`, `302`, `307`, and `308` redirects are followed automatically (up to 5 hops by default). The lockfile key remains the original URL from the Markdown, but validation is performed against the final redirected resource.
+
+### Restore Fidelity
+
+The lockfile stores the original inline anchor text (e.g., `Documentation` from `[Documentation](https://example.com)`). During restore, markers are inflated back to `[Documentation](https://example.com)` rather than `[https://example.com](https://example.com)`. If the anchor text is missing (legacy lockfiles or text equals URL), restore falls back to `[url](url)`.
+
 ### Interfaces
 
 #### CLI
@@ -113,12 +121,13 @@ const { output, restoredCount, lockfilePath } =
 | ✅ Done | **Code-block-aware parsing** | `src/scanner.ts` skips links inside inline code, fenced blocks, and indented blocks. |
 | ✅ Done | **Agent CLI modes** | `--check` and `--json` flags for non-destructive, machine-readable output. |
 | ✅ Done | **Honest token accounting** | `cached` flag in lockfile prevents double-counting savings across runs. |
+| ✅ Done | **HTTP redirect following** | `301`/`302`/`307`/`308` redirects followed up to 5 hops. |
+| ✅ Done | **Restore original anchor text** | Lockfile stores `original_text`; restore reconstructs `[text](url)`. |
 | 🟡 Medium | **Custom HTTP headers** | `--header "Authorization: Bearer ..."` for private URLs. |
 | 🟡 Medium | **Watch mode** | `--watch` flag for iterative prompt development. |
 | 🟡 Medium | **Retry logic / rate limiting** | Single attempt only; no exponential backoff. |
 | 🟢 Low | **Config file support** | `.doc-lokrc.json` or similar for persistent defaults. |
 | 🟢 Low | **Concurrency option** | Currently sequential; opt-in `Promise.allSettled` pool. |
-| 🟢 Low | **Restore with original link text** | Currently restores `[url](url)`; storing original `[text](url)` in lockfile would be nicer. |
 
 ---
 
@@ -129,7 +138,7 @@ const { output, restoredCount, lockfilePath } =
 3. **No authentication** — Private URLs return 401/403 and are marked as errors.
 4. **No recursive following** — Only validates linked URLs, does not inline their content.
 5. **Sequential validation** — One URL at a time; slow for documents with 100+ links.
-6. **Restore uses URL as link text** — Markers are restored as `[url](url)` because the original `[text](url)` is not stored in the lockfile.
+6. **Same URL with different anchor texts** — The lockfile stores one `original_text` per URL, so the last-seen text wins on restore.
 
 ---
 
@@ -171,3 +180,5 @@ node dist/cli.js path/to/file.md --check --json
 - **Reference definitions stay put** — Already compact; removing them breaks Markdown rendering.
 - **Code-block-aware scanning** — `src/scanner.ts` tracks Markdown code state so links inside code spans/blocks are never condensed.
 - **Honest token accounting** — The lockfile tracks a `cached` flag per URL; savings are only counted the first time a link is successfully cached, preventing inflation across repeated runs.
+- **Redirect following** — Native `node:http`/`node:https` requests do not follow redirects, so `network.ts` resolves `Location` headers recursively while keeping the original URL as the lockfile key.
+- **Lockfield field preservation** — `updateEntry` spreads the previous entry before overwriting core fields, so metadata like `original_text` survives re-validation.

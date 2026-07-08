@@ -73,6 +73,34 @@ describe("validateUrl", () => {
         return;
       }
 
+      if (pathname === "/redirect") {
+        res.setHeader("location", "/final");
+        res.writeHead(302);
+        res.end();
+        return;
+      }
+
+      if (pathname === "/redirect-relative") {
+        res.setHeader("location", "final");
+        res.writeHead(302);
+        res.end();
+        return;
+      }
+
+      if (pathname === "/final") {
+        res.setHeader("etag", '"final-etag"');
+        res.writeHead(200);
+        res.end("final content");
+        return;
+      }
+
+      if (pathname === "/redirect-loop") {
+        res.setHeader("location", "/redirect-loop");
+        res.writeHead(302);
+        res.end();
+        return;
+      }
+
       res.writeHead(200);
       res.end("default");
     });
@@ -203,5 +231,63 @@ describe("validateUrl", () => {
       "b1b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8"; // not real
     // We can't predict the exact hash without computing it, but we can verify it's a valid hex string
     expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("follows 302 redirects to validate the final resource", async () => {
+    const result = await validateUrl(`http://localhost:${port}/redirect`, {
+      knownEtag: null,
+      knownSha256: null,
+    });
+
+    expect(result.etag).toBe('"final-etag"');
+    expect(result.byteLength).toBe(13); // "final content"
+    expect(result.tokenCost).toBe(Math.ceil(13 / 4));
+
+    expect(requestLog).toHaveLength(4);
+    expect(requestLog[0].method).toBe("HEAD");
+    expect(requestLog[0].url).toBe("/redirect");
+    expect(requestLog[1].method).toBe("HEAD");
+    expect(requestLog[1].url).toBe("/final");
+    expect(requestLog[2].method).toBe("GET");
+    expect(requestLog[2].url).toBe("/redirect");
+    expect(requestLog[3].method).toBe("GET");
+    expect(requestLog[3].url).toBe("/final");
+  });
+
+  it("follows redirects with relative Location headers", async () => {
+    const result = await validateUrl(
+      `http://localhost:${port}/redirect-relative`,
+      {
+        knownEtag: null,
+        knownSha256: null,
+      },
+    );
+
+    expect(result.etag).toBe('"final-etag"');
+    expect(result.byteLength).toBe(13);
+  });
+
+  it("short-circuits when the final resource ETag matches", async () => {
+    const result = await validateUrl(`http://localhost:${port}/redirect`, {
+      knownEtag: '"final-etag"',
+      knownSha256: "old-sha",
+    });
+
+    expect(result.unchanged).toBe(true);
+    expect(result.sha256).toBe("old-sha");
+    expect(result.byteLength).toBe(0);
+
+    // Only the HEAD chain is issued; no GET body transfer.
+    expect(requestLog.every((r) => r.method === "HEAD")).toBe(true);
+  });
+
+  it("throws when redirect depth is exceeded", async () => {
+    await expect(
+      validateUrl(`http://localhost:${port}/redirect-loop`, {
+        knownEtag: null,
+        knownSha256: null,
+        maxRedirects: 2,
+      }),
+    ).rejects.toThrow("Too many redirects");
   });
 });

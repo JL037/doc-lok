@@ -5,6 +5,19 @@
 >
 > Supports **inline links** `[text](url)`, **reference definitions** `[ref]: url`, and a **round-trip restore** command to inflate markers back into links.
 
+## Features
+
+- **Context condensation** — Replace unchanged external Markdown links with tiny HTML comment markers, shrinking LLM prompts by up to 99.5% per cached link.
+- **Inline & reference link support** — Handles `[text](url)` and `[ref]: url` definitions (reference defs are validated but left intact).
+- **Code-block awareness** — Skips links inside inline code, fenced blocks, and indented blocks so examples stay readable.
+- **SHA-256 + ETag caching** — Stores cryptographic metadata in `doc-lok.json` to detect when remote content actually changes.
+- **HEAD-then-streamed-GET validation** — Uses ETags for a fast path and streams the response body through an incremental hasher for O(1) memory usage.
+- **HTTP redirect following** — Follows `301`/`302`/`307`/`308` redirects automatically (up to 5 hops).
+- **Round-trip restore** — Inflates markers back into the original `[text](url)` links using the lockfile.
+- **Agent-friendly CLI** — Supports `--check`, `--json`, `--quiet`, `--restore`, and `--lockfile` for automated workflows.
+- **Library API** — Programmatic `condenseMarkdown`, `restoreMarkdown`, `checkMarkdown`, and `validateUrl` functions.
+- **Zero runtime dependencies** — Uses only Node.js built-in modules.
+
 ---
 
 ## Table of Contents
@@ -251,15 +264,17 @@ cryptographic metadata for every URL it has seen. The structure:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "global_tokens_saved": 18432,
   "urls": {
     "https://example.com/docs": {
       "last_known_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
       "etag": "\"abc123\"",
       "token_cost_raw": 357,
-      "token_cost_compressed": 15,
-      "last_checked": "2026-06-27T08:36:00.000Z"
+      "token_cost_compressed": 18,
+      "last_checked": "2026-06-27T08:36:00.000Z",
+      "cached": true,
+      "original_text": "read the docs"
     }
   }
 }
@@ -276,6 +291,7 @@ cryptographic metadata for every URL it has seen. The structure:
 | `urls[*].token_cost_compressed` | Token cost after condensing (always `18` — the hash-embedded marker size). |
 | `urls[*].last_checked` | ISO-8601 timestamp of the last successful validation. |
 | `urls[*].cached` | `true` once this URL has been successfully cached/condensed. Used to avoid double-counting `global_tokens_saved` across repeated runs. |
+| `urls[*].original_text` | The original inline link text (e.g., `Documentation`). Stored so `--restore` can reconstruct `[Documentation](url)` instead of `[url](url)`. Only present when the text differs from the URL. |
 
 The lockfile is written **atomically** (write-temp-then-rename) to prevent
 corruption from concurrent processes or crashes.
@@ -313,6 +329,11 @@ maintains constant memory regardless of payload size.
 A matching ETag means the body hasn't changed — no need to download it at
 all. This turns a multi-megabyte transfer into a few hundred bytes of
 headers.
+
+**Redirects:** `301`, `302`, `307`, and `308` responses are followed
+automatically (up to a default of 5 hops). The lockfile key remains the
+original URL from the Markdown document, while validation is performed
+against the final redirected resource.
 
 ### Token Savings Calculation
 
@@ -495,6 +516,7 @@ interface UrlEntry {
   token_cost_compressed: number;
   last_checked: string;        // ISO-8601
   cached?: boolean;            // true once this URL has been successfully cached
+  original_text?: string;      // original anchor text for faithful restore
 }
 
 interface ValidationResult {
@@ -736,7 +758,7 @@ doc-lok docs/spec.md --quiet | cargo run --bin prompter
 - **Sequential validation:** URLs are fetched one at a time. For documents with hundreds of links, this may be slow. Use the library API with `validateUrl()` directly if you need concurrent fetching.
 - **Lockfile is per-project:** Each project directory gets its own `doc-lok.json`. There is no global cache. Use `--lockfile` or `DOC_LOK_LOCKFILE` to share a lockfile across projects.
 - **No authentication:** `doc-lok` does not send auth headers. Private/authenticated URLs will return 401/403 and be marked as errors.
-- **Restore uses URL as link text:** Markers are restored as `[url](url)` because the original `[text](url)` is not stored in the lockfile.
+- **Same URL with different anchor texts:** If the same URL appears multiple times with different link text, the lockfile stores only the last-seen text. All restored markers for that URL will use that text.
 - **`--check` still updates the lockfile:** While the Markdown file is not modified in check mode, the lockfile is still written with current SHA-256 / ETag metadata. This is intentional — the lockfile should always reflect the latest known state of remote resources.
 
 ---

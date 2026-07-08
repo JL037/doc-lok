@@ -57,7 +57,7 @@ describe("readLockfile", () => {
   it("returns a default skeleton when the file does not exist", async () => {
     const result = await readLockfile(path.join(tmpDir, "missing.json"));
     expect(result).toEqual({
-      version: 1,
+      version: 2,
       global_tokens_saved: 0,
       urls: {},
     });
@@ -287,5 +287,36 @@ describe("updateEntry", () => {
 
     expect(tokensSaved).toBe(0); // changed URLs are left intact, no savings
     expect(lockfile.global_tokens_saved).toBe(0);
+  });
+
+  it("preserves existing fields such as original_text when updating", () => {
+    const lockfile: Lockfile = {
+      version: 2,
+      global_tokens_saved: 50,
+      urls: {
+        "https://example.com": {
+          last_known_sha256: "old-sha",
+          etag: '"old-etag"',
+          token_cost_raw: 200,
+          token_cost_compressed: COMPRESSED_MARKER_TOKENS,
+          last_checked: "2024-01-01T00:00:00.000Z",
+          cached: true,
+          original_text: "Documentation",
+        },
+      },
+    };
+
+    const { entry } = updateEntry(
+      lockfile,
+      "https://example.com",
+      "new-sha",
+      '"new-etag"',
+      200,
+      true,
+    );
+
+    expect(entry.original_text).toBe("Documentation");
+    expect(entry.last_known_sha256).toBe("new-sha");
+    expect(entry.etag).toBe('"new-etag"');
   });
 });

@@ -67,7 +67,7 @@ describe("CLI", () => {
   it("prints version with --version", async () => {
     const { stdout, stderr, code } = await run(["--version"]);
     expect(code).toBe(0);
-    expect(stdout).toContain("0.1.3");
+    expect(stdout).toContain("0.2.0");
   });
 
   it("exits with code 2 when no file given", async () => {

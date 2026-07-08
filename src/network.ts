@@ -35,9 +35,17 @@ export interface ValidateOptions {
   signal?: AbortSignal;
   /** Per-request timeout in milliseconds (default 15 000). */
   timeoutMs?: number;
+  /** Maximum number of redirects to follow (default 5). */
+  maxRedirects?: number;
 }
 
 const DEFAULT_TIMEOUT = 15_000;
+const DEFAULT_MAX_REDIRECTS = 5;
+
+/** Return true for redirect status codes that should be followed. */
+function isRedirect(statusCode: number | undefined): boolean {
+  return statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308;
+}
 
 /**
  * Validate a single URL.
@@ -78,17 +86,44 @@ interface HeadResult {
   statusCode: number;
 }
 
-/** Issue a HEAD request and extract the ETag header. */
-function headRequest(url: string, opts: ValidateOptions): Promise<HeadResult> {
+/** Issue a HEAD request and extract the ETag header, following redirects. */
+function headRequest(
+  url: string,
+  opts: ValidateOptions,
+  redirectCount = 0,
+): Promise<HeadResult> {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https:") ? request : httpRequest;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+    const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
     const req = lib(
       url,
       { method: "HEAD", timeout: timeoutMs, signal: opts.signal },
       (res) => {
         res.resume(); // drain immediately
+
+        if (isRedirect(res.statusCode)) {
+          const location = res.headers.location;
+          if (!location) {
+            reject(
+              new Error(
+                `HEAD ${url} → HTTP ${res.statusCode} but no Location header`,
+              ),
+            );
+            return;
+          }
+          if (redirectCount >= maxRedirects) {
+            reject(new Error(`Too many redirects for ${url}`));
+            return;
+          }
+          const nextUrl = new URL(location, url).toString();
+          headRequest(nextUrl, opts, redirectCount + 1)
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+
         if (res.statusCode === undefined || res.statusCode >= 400) {
           reject(new Error(`HEAD ${url} → HTTP ${res.statusCode ?? "?"}`));
           return;
@@ -115,10 +150,12 @@ function streamGet(
   url: string,
   opts: ValidateOptions,
   etagFromHead: string | null,
+  redirectCount = 0,
 ): Promise<ValidationResult> {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https:") ? request : httpRequest;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT;
+    const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
     const hasher = createHash("sha256");
     let byteLength = 0;
 
@@ -126,6 +163,28 @@ function streamGet(
       url,
       { method: "GET", timeout: timeoutMs, signal: opts.signal },
       (res) => {
+        if (isRedirect(res.statusCode)) {
+          const location = res.headers.location;
+          if (!location) {
+            reject(
+              new Error(
+                `GET ${url} → HTTP ${res.statusCode} but no Location header`,
+              ),
+            );
+            return;
+          }
+          if (redirectCount >= maxRedirects) {
+            reject(new Error(`Too many redirects for ${url}`));
+            return;
+          }
+          res.resume();
+          const nextUrl = new URL(location, url).toString();
+          streamGet(nextUrl, opts, etagFromHead, redirectCount + 1)
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+
         if (res.statusCode === undefined || res.statusCode >= 400) {
           res.resume();
           reject(new Error(`GET ${url} → HTTP ${res.statusCode ?? "?"}`));

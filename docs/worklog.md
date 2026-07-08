@@ -1,5 +1,54 @@
 # doc-lok — Development Worklog
 
+## 2026-07-06 — P0 Implementation: HTTP Redirects and Restore Anchor Text
+
+### What was done
+1. **HTTP redirect following** in `src/network.ts`:
+   - Added `maxRedirects` option to `ValidateOptions` (default 5).
+   - `headRequest` and `streamGet` now detect `301`/`302`/`307`/`308`, resolve the `Location` header (including relative URLs), and recurse up to the configured limit.
+   - Lockfile keys remain the original Markdown URL; validation targets the final redirected resource.
+   - Added 4 redirect tests to `test/network.test.ts`.
+
+2. **Restore original anchor text** in `src/state.ts` and `src/parser.ts`:
+   - Added `original_text?: string` to `UrlEntry`.
+   - Bumped default lockfile `version` from `1` to `2`.
+   - Updated `updateEntry` to spread the previous entry, preserving `original_text` (and any future fields) across re-validation.
+   - Updated `replaceLinks` to record `original_text` in the lockfile when condensing an inline link whose text differs from its URL.
+   - Updated `restoreMarkdown` to reconstruct `[text](url)` using `original_text`, falling back to `[url](url)` when absent.
+   - Added 5 tests to `test/parser-refs.test.ts` covering restore with text, legacy fallback, condense→restore round-trip, `checkMarkdown` preservation, and last-seen-wins behavior for duplicate URLs.
+   - Updated `test/state.test.ts` for the new default version and field preservation.
+   - Updated `test/cli-json.test.ts` and `test/cli.test.ts` expectations to match the new `[text](url)` restore behavior and `v0.2.0` version.
+
+3. **Documentation updates**:
+   - `README.md`: added a concise **Features** section; updated lockfile example, schema tables, network validation notes, and limitations.
+   - `docs/status.md`: updated capabilities, roadmap table, known limitations, and architecture decisions.
+   - `ROADMAP.md`: corrected the restore-text section to use the lockfile instead of inline markers.
+   - `docs/implementation-p0.md`: detailed implementation notes (see file).
+   - `CHANGELOG.md`: created to track versioned changes and an `[Unreleased]` section.
+
+### Tests
+```
+Test Files  10 passed (10)
+     Tests  89 passed (89)
+```
+
+### Files changed / created
+| File | Action |
+|------|--------|
+| `src/network.ts` | Added redirect following |
+| `src/state.ts` | Added `original_text`, bumped lockfile version, preserved fields in `updateEntry` |
+| `src/parser.ts` | Record and restore anchor text |
+| `test/network.test.ts` | Added redirect tests |
+| `test/parser-refs.test.ts` | Added restore anchor-text tests |
+| `test/state.test.ts` | Updated for version 2 and field preservation |
+| `README.md` | Updated docs |
+| `docs/status.md` | Updated status |
+| `docs/worklog.md` | Added this entry |
+| `ROADMAP.md` | Updated restore-text recommendation |
+| `docs/implementation-p0.md` | Created detailed implementation doc |
+
+---
+
 ## 2026-07-03 — Code-Block-Aware Parsing, Honest Token Accounting, and Doc Sync
 
 ### What was done
