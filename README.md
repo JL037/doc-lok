@@ -1,29 +1,100 @@
 # doc-lok
 
-> **Pre-prompt context condenser for LLM workflows.**
-> Read a Markdown file, fetch external hyperlinks, cache them with SHA-256 lockfiles, and replace unchanged links with a tiny HTML comment marker — shrinking context windows by up to 99.5%.
->
-> Supports **inline links** `[text](url)`, **reference definitions** `[ref]: url`, and a **round-trip restore** command to inflate markers back into links.
+> **If you feed Markdown docs to an LLM more than once, you're paying for
+> the same remote links over and over.** `doc-lok` caches them — unchanged
+> links shrink to a tiny marker, changed links stay visible, and the next
+> run skips the work it already did.
 
-## Features
+## What it does, concretely
 
-- **Context condensation** — Replace unchanged external Markdown links with tiny HTML comment markers, shrinking LLM prompts by up to 99.5% per cached link.
-- **Inline & reference link support** — Handles `[text](url)` and `[ref]: url` definitions (reference defs are validated but left intact).
-- **Code-block awareness** — Skips links inside inline code, fenced blocks, and indented blocks so examples stay readable.
-- **SHA-256 + ETag caching** — Stores cryptographic metadata in `doc-lok.json` to detect when remote content actually changes.
-- **HEAD-then-streamed-GET validation** — Uses ETags for a fast path and streams the response body through an incremental hasher for O(1) memory usage.
-- **HTTP redirect following** — Follows `301`/`302`/`307`/`308` redirects automatically (up to 5 hops).
-- **Round-trip restore** — Inflates markers back into the original `[text](url)` links using the lockfile.
-- **Agent-friendly CLI** — Supports `--check`, `--json`, `--quiet`, `--restore`, and `--lockfile` for automated workflows.
-- **Library API** — Programmatic `condenseMarkdown`, `restoreMarkdown`, `checkMarkdown`, and `validateUrl` functions.
+You give `doc-lok` a Markdown file with external `http(s)` links. It:
+
+1. Validates each link against the remote server (HEAD + streamed GET).
+2. Records a SHA-256 of the body and the server's ETag in a local
+   `doc-lok.json` lockfile.
+3. **Replaces unchanged inline links with a marker** so the prompt shrinks:
+   ```markdown
+   Read the [documentation](https://example.com/docs) for details.
+   ```
+   becomes
+   ```markdown
+   Read the <!-- doc-lok:cached#abc123 --> for details.
+   ```
+4. **Leaves changed or new links intact** so the LLM still sees them.
+5. Can **restore** markers back into the original `[text](url)` links with a
+   single flag, so the round-trip is reversible.
+
+The savings add up fast on repeat runs against the same documents —
+spec sheets, living READMEs, agent context files.
+
+## Is this for you?
+
+**Yes, if:**
+
+- You feed the same Markdown documents to an LLM repeatedly (docs, specs,
+  agent context, README files, knowledge bases).
+- Those documents link to remote resources that change rarely.
+- You want to cut prompt tokens and latency on repeat runs without
+  rewriting your docs by hand.
+
+**Not for you, if:**
+
+- You only ever summarise a Markdown file once. *Nothing's cached yet, so
+  the first run leaves every link intact — the value is on the second run
+  onward.*
+- You want to *fetch and inline linked page content* into your prompt.
+  doc-lok only shrinks the **link text**, not the linked content. (See
+  [Future Features & Fixes](#future-features--fixes) — this is on the
+  roadmap as `--inline`.)
+- Your documents are private / require auth. doc-lok sends no
+  `Authorization` headers; private URLs return 401/403 and are marked
+  as errors.
+
+## What you'll see on the first run vs. the second
+
+```bash
+# First run — nothing cached yet. Every URL is fetched; every inline link
+# stays intact. The lockfile gets warmed.
+$ doc-lok README.md --quiet > condensed.md
+
+# Second run — ETags / SHAs match the lockfile. Stale inline links become
+# markers. The prompt shrinks.
+$ doc-lok README.md --quiet > condensed.md
+```
+
+The savings become visible on the **second** run, not the first. The first
+run is the cache warm-up.
+
+## Highlights
+
+- **Inline & reference link support** — Handles `[text](url)` and `[ref]: url`
+  (reference defs are validated but left intact, since removing them breaks
+  Markdown rendering).
+- **Code-block awareness** — Skips links inside inline code, fenced blocks,
+  and indented blocks so examples stay readable.
+- **SHA-256 + ETag caching** — A `doc-lok.json` lockfile detects when remote
+  content actually changed.
+- **HEAD-then-streamed-GET validation** — ETag fast path skips body transfer;
+  when ETag is missing or mismatched, the body is streamed through an
+  incremental hasher — O(1) memory regardless of payload size.
+- **HTTP redirect following** — Follows `301`/`302`/`307`/`308` automatically
+  (up to 5 hops).
+- **Round-trip restore** — Inflates markers back into the original
+  `[text](url)` links, preserving anchor text.
+- **Agent-friendly CLI** — `--check`, `--json`, `--quiet`, `--restore`, and
+  `--lockfile` for automated workflows.
+- **Library API** — Programmatic `condenseMarkdown`, `restoreMarkdown`,
+  `checkMarkdown`, and `validateUrl` functions with full TypeScript types.
 - **Zero runtime dependencies** — Uses only Node.js built-in modules.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Why doc-lok?](#why-doc-lok)
+- [What it does, concretely](#what-it-does-concretely)
+- [Is this for you?](#is-this-for-you)
+- [What you'll see on the first run vs. the second](#what-youll-see-on-the-first-run-vs-the-second)
+- [Highlights](#highlights)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
   - [CLI Usage](#cli-usage)
@@ -54,45 +125,40 @@
   - [Shell Pipeline (Python / Go / Rust)](#shell-pipeline-python--go--rust)
   - [GitHub Actions](#github-actions)
 - [Limitations & Caveats](#limitations--caveats)
+- [Future Features & Fixes](#future-features--fixes)
 - [Contributing](#contributing)
 - [License](#license)
 
 ---
 
-## Overview
+## Why doc-lok exists
 
-`doc-lok` is a universal standalone package written in TypeScript that acts as
-a **middleware layer between your Markdown documents and your LLM prompts**.
+`doc-lok` is a universal standalone package written in TypeScript that acts
+as a **middleware layer between your Markdown documents and your LLM prompts**.
 
 When you feed a Markdown file to an LLM, any `[text](https://...)` links are
-included as raw text. If those remote resources haven't changed since the last
-run, you're paying for tokens that carry zero new information. `doc-lok`
-eliminates that waste:
+included as raw text. If those remote resources haven't changed since the
+last run, you're paying for tokens that carry zero new information. `doc-lok`
+eliminates that waste by:
 
-1. It parses every external `http(s)` hyperlink in the document — both **inline**
+1. Parsing every external `http(s)` hyperlink in the document — both **inline**
    links `[text](url)` and **reference-style** definitions `[ref]: url`.
-2. Links inside code spans or code blocks (inline backticks, fenced ` ``` `,
-   and indented blocks) are ignored so code examples stay intact.
-3. It checks whether the remote content has changed since the last run using
+2. Skipping links inside code spans or code blocks (inline backticks, fenced
+   ` ``` `, and indented blocks) so code examples stay intact.
+3. Checking whether the remote content has changed since the last run using
    a local `doc-lok.json` lockfile keyed on **SHA-256 hashes** and **ETags**.
-4. Unchanged inline links are replaced with a compact HTML comment marker:
+4. Replacing unchanged inline links with a compact HTML comment marker:
    `<!-- doc-lok:cached#abc123 -->` (the hash makes restore unambiguous).
-5. Reference definitions are validated but left intact — they're already cheap
-   and removing them would break Markdown rendering.
-6. Changed or new links are left intact so the LLM can see them.
-7. A **restore** command reverses the operation, turning markers back into links.
-
-This reduces context window consumption by up to **99.5%** per cached link,
-dramatically lowering API costs and improving prompt latency.
-
----
-
-## Why doc-lok?
+5. Validating reference definitions but leaving them intact — they're already
+   cheap and removing them would break Markdown rendering.
+6. Leaving changed or new links intact so the LLM can see them.
+7. Offering a **restore** command that reverses the operation, turning
+   markers back into links.
 
 | Problem | Solution |
 |---|---|
 | LLM prompts include stale URLs that waste tokens | SHA-256 lockfile detects unchanged content; marker replaces stale links |
-| Fetching every URL on every run is slow | HEAD request with `If-None-Match` ETag fast-path skips body transfer entirely |
+| Fetching every URL on every run is slow | HEAD request compares the server's ETag against the lockfile; on match, no body transfer at all |
 | Large remote payloads blow up memory | Response body is streamed through an incremental hasher — O(1) memory regardless of payload size |
 | Broken links crash the whole pipeline | Each URL is validated in isolation; errors are reported as diagnostics, never fatal |
 | Non-JS developers need to use it | CLI binary writes condensed Markdown to stdout — pipe-friendly for Python, Go, Rust, etc. |
@@ -760,6 +826,110 @@ doc-lok docs/spec.md --quiet | cargo run --bin prompter
 - **No authentication:** `doc-lok` does not send auth headers. Private/authenticated URLs will return 401/403 and be marked as errors.
 - **Same URL with different anchor texts:** If the same URL appears multiple times with different link text, the lockfile stores only the last-seen text. All restored markers for that URL will use that text.
 - **`--check` still updates the lockfile:** While the Markdown file is not modified in check mode, the lockfile is still written with current SHA-256 / ETag metadata. This is intentional — the lockfile should always reflect the latest known state of remote resources.
+
+---
+
+## Future Features & Fixes
+
+> Public roadmap. Order indicates priority, not commitment dates.
+> Anything listed here is on the way; anything not listed here probably
+> isn't.
+
+### Up next — correctness & safety
+
+Before new features land, a handful of fixes are queued so the existing
+claims become fully honest and safe to run in CI:
+
+- **Longer marker hashes** — today's 6-hex-char slice is fine for small
+  projects but theoretically collision-prone after a few thousand unique
+  URLs. We'll widen it so `--restore` never silently rewrites the wrong
+  URL.
+- **Honest savings accounting** — `--check` currently mutates
+  `global_tokens_saved` in the lockfile, which can inflate the ROI
+  number. We'll make `--check` a pure projection.
+- **SSRF guard** — block loopback, link-local, RFC-1918, and cloud
+  metadata endpoints by default. Opt in to private ranges with
+  `--allow-private`. Required before running doc-lok on untrusted
+  Markdown in CI / agent workflows.
+- **Code-block-aware reference defs** — today `[ref]: https://…` lines
+  inside fenced code blocks are still validated and added to the
+  lockfile. We'll route ref-def extraction through the same code-state
+  machine as inline links.
+- **Accurate README on the ETag fast path** — the README mentions an
+  `If-None-Match` conditional that the implementation doesn't actually
+  send. We'll either send it (and accept `304 Not Modified`) or drop the
+  claim.
+
+### Then — the big one: `--inline` content fetching
+
+The most-requested capability (and the one most first-time readers
+assume "pre-prompt context condenser" already does): fetch the *content*
+of linked pages and cache that, not just the link text.
+
+- **`--inline` flag** — on first encounter of a URL, fetch the body,
+  store it, and inject a fenced block into the Markdown:
+
+  ```md
+  See [docs](https://example.com/docs):
+
+  <!-- doc-lok:inline#abc123
+  <fetched content here>
+  -->
+  ```
+
+  On re-run: unchanged URLs leave the inline block in place (no body
+  re-fetch). Changed URLs re-GET and replace the block. This is
+  literally the "fetch, cache, skip when stale" workflow.
+
+- **Separate cache directory** — lockfile keeps metadata (SHA / ETag /
+  timestamps); bodies live in `.doc-lok/cache/<sha>.raw`. Keeps the
+  JSON small and makes offline runs possible.
+- **`--max-bytes` and content-type allowlist** — default text/html
+  only, 1 MB cap. Refuses to inline binaries, PDFs, archives, or
+  oversized bodies.
+- **SSRF hardening for inline mode** — fetching *bodies* from arbitrary
+  URLs into prompts is a content-injection + exfiltration surface, not
+  just request forgery. Strict default-deny for private addresses.
+
+### After that — making the value legible
+
+- **Honest token accounting for inline** — `tokensSaved` will reflect
+  the token delta of content reuse (cached body vs no body), not just
+  link-text shrinking.
+- **`--diff` mode** — emit a line diff between the previously cached
+  body and the freshly fetched one. Staleness is only useful if you can
+  see *what changed*, not just whether a hash differs.
+
+### Later — production niceties
+
+Built only when a real user asks. We won't gold-plate ahead of demand.
+
+- **`--ttl <minutes>`** — skip the network entirely if `last_checked`
+  is recent. The true "don't observe this URL again" path.
+- **`--concurrency N`** — parallel validation for documents with many
+  links. Default capped (e.g. 8) to be polite to remote hosts.
+- **`--prune`** — remove lockfile entries not seen in the latest
+  Markdown. Pair with `--prune --dry-run` for safe previews.
+- **`--allow-host` / `--deny-host`** — per-host overrides on top of the
+  SSRF defaults. Useful for "trust internal `docs.example.corp` but
+  block everything else private."
+
+### What we won't build
+
+To keep doc-lok's identity focused:
+
+- **A full CommonMark parser.** The line-by-line state machine is good
+  enough; a CommonMark dependency would break the zero-dependency
+  promise for marginal correctness gains.
+- **A plugin / extension system.** New content-types ship as flags,
+  not hooks.
+- **Custom token-cost models.** The 4-bytes/token heuristic is fine;
+  pretending to be tiktoken adds complexity for no real billing win.
+- **Recursive link following.** doc-lok stays one level deep — it never
+  crawls linked pages.
+- **Authentication headers.** No `Authorization: Bearer …`. Private /
+  authenticated URLs return `401`/`403` and are marked as errors. This
+  is a security boundary, not a missing feature.
 
 ---
 

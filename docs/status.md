@@ -19,7 +19,7 @@
 
 ### What doc-lok Does
 
-`doc-lok` is a **pre-prompt context condenser** for LLM workflows. You give it a Markdown file; it gives you back a version where unchanged external links are replaced with tiny HTML comment markers, shrinking your context window by up to **99.5%** per cached link.
+`doc-lok` is a **pre-prompt context condenser** for LLM workflows. You give it a Markdown file; it gives you back a version where unchanged external links are replaced with tiny HTML comment markers, shrinking the prompt's token cost.
 
 It supports a **full round-trip**: condense → (edit/read) → restore.
 
