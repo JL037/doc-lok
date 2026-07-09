@@ -1,6 +1,8 @@
 /**
- * state.ts — Manages the `doc-lok.json` lockfile that persists per-URL
- * cryptographic metadata so unchanged remote resources can be skipped.
+ * state.ts — Manages the lockfile (`.doc-lok/lock.json`) that persists
+ * per-URL cryptographic metadata so unchanged remote resources can be
+ * skipped. All doc-lok artifacts live under the `.doc-lok/` directory
+ * so the project root stays clean.
  */
 
 import { createHash } from "node:crypto";
@@ -27,6 +29,13 @@ export interface UrlEntry {
    *  reconstruct `[text](url)` instead of `[url](url)`. Only present when the
    *  anchor text differs from the URL. */
   original_text?: string;
+  /** True once the body has been converted to Markdown + section-indexed.
+   *  Added in lockfile v3. Absent on v1/v2 lockfiles, treated as false. */
+  converted?: boolean;
+  /** Slugs of sections detected from the converted Markdown.
+   *  Informational only — the cache files (.md + .index.json) are the
+   *  source of truth for content. Added in lockfile v3. */
+  section_slugs?: string[];
 }
 
 /** Top-level lockfile shape. */
@@ -41,7 +50,7 @@ export interface Lockfile {
 
 /** Default lockfile written when none exists yet. */
 const DEFAULT_LOCKFILE: Lockfile = {
-  version: 2,
+  version: 3,
   global_tokens_saved: 0,
   urls: {},
 };
@@ -56,8 +65,11 @@ export const COMPRESSED_MARKER_TOKENS = 18;
  * Resolve the lockfile path.  Resolution order:
  *  1. Explicit `lockfilePath` argument.
  *  2. `DOC_LOK_LOCKFILE` env var.
- *  3. `doc-lok.json` in the same directory as the Markdown file.
- *  4. `doc-lok.json` in `process.cwd()`.
+ *  3. `.doc-lok/lock.json` in the same directory as the Markdown file.
+ *  4. `.doc-lok/lock.json` in `process.cwd()`.
+ *
+ * All doc-lok runtime artifacts (lockfile, cache) live under a single
+ * `.doc-lok/` directory so the project root stays clean.
  */
 export function resolveLockfilePath(
   mdFilePath: string,
@@ -67,7 +79,7 @@ export function resolveLockfilePath(
   const env = process.env.DOC_LOK_LOCKFILE;
   if (env) return path.resolve(env);
   const mdDir = path.dirname(path.resolve(mdFilePath));
-  return path.join(mdDir, "doc-lok.json");
+  return path.join(mdDir, ".doc-lok", "lock.json");
 }
 
 /** Read and parse the lockfile, returning a default skeleton if absent. */
@@ -114,11 +126,15 @@ export function estimateTokens(text: string): number {
 }
 
 /**
- * Compute a short stable hash of a URL for marker embedding.
- * Returns the first 6 hex characters of the SHA-256 digest.
+ * Compute a stable hash of a URL for marker embedding.
+ * Returns the full 64-character SHA-256 hex digest.
+ *
+ * The full digest makes marker collisions astronomically unlikely
+ * (birthday bound at ~2^128 URLs) so `--restore` and `--inline`
+ * never silently substitute the wrong URL or content.
  */
 export function hashUrl(url: string): string {
-  return createHash("sha256").update(url).digest("hex").slice(0, 6);
+  return createHash("sha256").update(url).digest("hex");
 }
 
 /** Record a successful validation result against a lockfile entry.

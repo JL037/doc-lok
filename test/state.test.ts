@@ -36,10 +36,10 @@ describe("resolveLockfilePath", () => {
     expect(result).toBe(path.resolve("/env/lock.json"));
   });
 
-  it("falls back to doc-lok.json next to the markdown file", () => {
+  it("falls back to .doc-lok/lock.json next to the markdown file", () => {
     delete process.env.DOC_LOK_LOCKFILE;
     const result = resolveLockfilePath("docs/readme.md");
-    expect(result).toBe(path.resolve("docs/doc-lok.json"));
+    expect(result).toBe(path.resolve("docs/.doc-lok/lock.json"));
   });
 });
 
@@ -57,14 +57,14 @@ describe("readLockfile", () => {
   it("returns a default skeleton when the file does not exist", async () => {
     const result = await readLockfile(path.join(tmpDir, "missing.json"));
     expect(result).toEqual({
-      version: 2,
+      version: 3,
       global_tokens_saved: 0,
       urls: {},
     });
   });
 
   it("reads and parses a valid lockfile", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const data: Lockfile = {
       version: 1,
       global_tokens_saved: 42,
@@ -78,15 +78,15 @@ describe("readLockfile", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(data), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(data), "utf8");
 
     const result = await readLockfile(lockPath);
     expect(result).toEqual(data);
   });
 
   it("normalizes a partially-formed lockfile", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
-    await fs.writeFile(lockPath, JSON.stringify({ version: 2 }), "utf8");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify({ version: 2 }), "utf8");
 
     const result = await readLockfile(lockPath);
     expect(result.version).toBe(2);
@@ -114,7 +114,7 @@ describe("writeLockfile", () => {
   });
 
   it("atomically writes a well-formed JSON file", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const data: Lockfile = {
       version: 1,
       global_tokens_saved: 10,
@@ -130,7 +130,7 @@ describe("writeLockfile", () => {
   });
 
   it("creates intermediate directories", async () => {
-    const lockPath = path.join(tmpDir, "deep", "nested", "doc-lok.json");
+    const lockPath = path.join(tmpDir, "deep", "nested", ".doc-lok", "lock.json");
     const data: Lockfile = {
       version: 1,
       global_tokens_saved: 0,

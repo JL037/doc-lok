@@ -1,181 +1,49 @@
 # doc-lok
 
-> **If you feed Markdown docs to an LLM more than once, you're paying for
-> the same remote links over and over.** `doc-lok` caches them — unchanged
-> links shrink to a tiny marker, changed links stay visible, and the next
-> run skips the work it already did.
+> Pre-prompt cache for link-bearing Markdown. Records SHA-256/ETag
+> metadata for remote links so unchanged content can be skipped on
+> repeat runs — saving network, latency, and a small number of LLM
+> tokens per link.
 
-## What it does, concretely
+## What it does
 
-You give `doc-lok` a Markdown file with external `http(s)` links. It:
+`doc-lok` scans Markdown files for external `http(s)` links, validates
+them against the remote server, and records their content hash
+(SHA-256) and ETag in a local `.doc-lok/lock.json` lockfile. On
+subsequent runs, it uses those to detect change cheaply (HEAD only)
+and skip work it already did.
 
-1. Validates each link against the remote server (HEAD + streamed GET).
-2. Records a SHA-256 of the body and the server's ETag in a local
-   `doc-lok.json` lockfile.
-3. **Replaces unchanged inline links with a marker** so the prompt shrinks:
-   ```markdown
-   Read the [documentation](https://example.com/docs) for details.
-   ```
-   becomes
-   ```markdown
-   Read the <!-- doc-lok:cached#abc123 --> for details.
-   ```
-4. **Leaves changed or new links intact** so the LLM still sees them.
-5. Can **restore** markers back into the original `[text](url)` links with a
-   single flag, so the round-trip is reversible.
+### Modes
 
-The savings add up fast on repeat runs against the same documents —
-spec sheets, living READMEs, agent context files.
+| Mode | Flag | What it does |
+|---|---|---|
+| **Condense** | (default) | Replaces unchanged inline `[text](url)` links with a compact HTML comment marker (`<!-- doc-lok:cached#<sha> -->`). Saves ~5 tokens per cached link. Changed/new links are left intact. |
+| **Inline** | `--inline` | Fetches linked page bodies, converts HTML→Markdown, caches results in `.doc-lok/cache/`. Injects content under each link. Repeat runs are HEAD-only — no body re-fetch. Default injects only a ~200-token table of contents; use `--section` to control what gets inlined. |
+| **Section** | `--inline --section <name>` | Modifier on `--inline`: inject only specific sections instead of the full body. Saves LLM tokens vs. an agent fetching the full page — e.g. a 50K-token doc becomes a 2K-token section. `--section all` for full body (no token savings, but network/latency savings on repeat runs). |
+| **Check** | `--check` | Validates all URLs and updates the lockfile, but does **not** modify the Markdown file. Non-destructive freshness probe. |
+| **Restore** | `--restore` | Reverses condense/inline: replaces markers and inline blocks back with original `[text](url)` links, preserving anchor text. |
 
-## Is this for you?
+### What's NOT shipped yet
 
-**Yes, if:**
+These are on the roadmap. The READMEs in some older releases may
+reference them as if they exist — they don't.
 
-- You feed the same Markdown documents to an LLM repeatedly (docs, specs,
-  agent context, README files, knowledge bases).
-- Those documents link to remote resources that change rarely.
-- You want to cut prompt tokens and latency on repeat runs without
-  rewriting your docs by hand.
+- **`--summary`** — LLM-generated summaries of linked pages. This is
+  where real LLM token savings would happen (a 50K-token doc becomes a
+  ~300-token summary). Not implemented.
+- **`--diff`** — Line diffs between cached and fresh bodies. Not implemented.
+- **`--concurrency`** — Parallel URL validation. Currently sequential.
+- **`--ttl`** — Skip network entirely if recently checked. Not implemented.
+- **`--prune`** — Remove stale lockfile entries. Not implemented.
 
-**Not for you, if:**
-
-- You only ever summarise a Markdown file once. *Nothing's cached yet, so
-  the first run leaves every link intact — the value is on the second run
-  onward.*
-- You want to *fetch and inline linked page content* into your prompt.
-  doc-lok only shrinks the **link text**, not the linked content. (See
-  [Future Features & Fixes](#future-features--fixes) — this is on the
-  roadmap as `--inline`.)
-- Your documents are private / require auth. doc-lok sends no
-  `Authorization` headers; private URLs return 401/403 and are marked
-  as errors.
-
-## What you'll see on the first run vs. the second
-
-```bash
-# First run — nothing cached yet. Every URL is fetched; every inline link
-# stays intact. The lockfile gets warmed.
-$ doc-lok README.md --quiet > condensed.md
-
-# Second run — ETags / SHAs match the lockfile. Stale inline links become
-# markers. The prompt shrinks.
-$ doc-lok README.md --quiet > condensed.md
-```
-
-The savings become visible on the **second** run, not the first. The first
-run is the cache warm-up.
-
-## Highlights
-
-- **Inline & reference link support** — Handles `[text](url)` and `[ref]: url`
-  (reference defs are validated but left intact, since removing them breaks
-  Markdown rendering).
-- **Code-block awareness** — Skips links inside inline code, fenced blocks,
-  and indented blocks so examples stay readable.
-- **SHA-256 + ETag caching** — A `doc-lok.json` lockfile detects when remote
-  content actually changed.
-- **HEAD-then-streamed-GET validation** — ETag fast path skips body transfer;
-  when ETag is missing or mismatched, the body is streamed through an
-  incremental hasher — O(1) memory regardless of payload size.
-- **HTTP redirect following** — Follows `301`/`302`/`307`/`308` automatically
-  (up to 5 hops).
-- **Round-trip restore** — Inflates markers back into the original
-  `[text](url)` links, preserving anchor text.
-- **Agent-friendly CLI** — `--check`, `--json`, `--quiet`, `--restore`, and
-  `--lockfile` for automated workflows.
-- **Library API** — Programmatic `condenseMarkdown`, `restoreMarkdown`,
-  `checkMarkdown`, and `validateUrl` functions with full TypeScript types.
-- **Zero runtime dependencies** — Uses only Node.js built-in modules.
-
----
-
-## Table of Contents
-
-- [What it does, concretely](#what-it-does-concretely)
-- [Is this for you?](#is-this-for-you)
-- [What you'll see on the first run vs. the second](#what-youll-see-on-the-first-run-vs-the-second)
-- [Highlights](#highlights)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-  - [CLI Usage](#cli-usage)
-  - [Library Usage](#library-usage)
-  - [Agent Integration](#agent-integration)
-- [How It Works](#how-it-works)
-  - [The Lockfile](#the-lockfile)
-  - [Network Validation Strategy](#network-validation-strategy)
-  - [Token Savings Calculation](#token-savings-calculation)
-- [Configuration](#configuration)
-  - [Lockfile Resolution](#lockfile-resolution)
-  - [Environment Variables](#environment-variables)
-- [API Reference](#api-reference)
-  - [`checkMarkdown(filePath, lockfilePath?)`](#checkmarkdownfilepath-lockfilepath)
-  - [`condenseMarkdown(filePath, lockfilePath?)`](#condensemarkdownfilepath-lockfilepath)
-  - [`restoreMarkdown(filePath, lockfilePath?)`](#restoremarkdownfilepath-lockfilepath)
-  - [`validateUrl(url, options)`](#validateurlurl-options)
-  - [`readLockfile(path)` / `writeLockfile(path, data)`](#readlockfilepath--writelockfilepath-data)
-  - [Types](#types)
-- [CLI Reference](#cli-reference)
-- [Project Structure](#project-structure)
-- [Architecture Decisions](#architecture-decisions)
-- [Development](#development)
-  - [Building](#building)
-  - [Scripts](#scripts)
-- [Integration Examples](#integration-examples)
-  - [Mastra Agent](#mastra-agent)
-  - [Shell Pipeline (Python / Go / Rust)](#shell-pipeline-python--go--rust)
-  - [GitHub Actions](#github-actions)
-- [Limitations & Caveats](#limitations--caveats)
-- [Future Features & Fixes](#future-features--fixes)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Why doc-lok exists
-
-`doc-lok` is a universal standalone package written in TypeScript that acts
-as a **middleware layer between your Markdown documents and your LLM prompts**.
-
-When you feed a Markdown file to an LLM, any `[text](https://...)` links are
-included as raw text. If those remote resources haven't changed since the
-last run, you're paying for tokens that carry zero new information. `doc-lok`
-eliminates that waste by:
-
-1. Parsing every external `http(s)` hyperlink in the document — both **inline**
-   links `[text](url)` and **reference-style** definitions `[ref]: url`.
-2. Skipping links inside code spans or code blocks (inline backticks, fenced
-   ` ``` `, and indented blocks) so code examples stay intact.
-3. Checking whether the remote content has changed since the last run using
-   a local `doc-lok.json` lockfile keyed on **SHA-256 hashes** and **ETags**.
-4. Replacing unchanged inline links with a compact HTML comment marker:
-   `<!-- doc-lok:cached#abc123 -->` (the hash makes restore unambiguous).
-5. Validating reference definitions but leaving them intact — they're already
-   cheap and removing them would break Markdown rendering.
-6. Leaving changed or new links intact so the LLM can see them.
-7. Offering a **restore** command that reverses the operation, turning
-   markers back into links.
-
-| Problem | Solution |
-|---|---|
-| LLM prompts include stale URLs that waste tokens | SHA-256 lockfile detects unchanged content; marker replaces stale links |
-| Fetching every URL on every run is slow | HEAD request compares the server's ETag against the lockfile; on match, no body transfer at all |
-| Large remote payloads blow up memory | Response body is streamed through an incremental hasher — O(1) memory regardless of payload size |
-| Broken links crash the whole pipeline | Each URL is validated in isolation; errors are reported as diagnostics, never fatal |
-| Non-JS developers need to use it | CLI binary writes condensed Markdown to stdout — pipe-friendly for Python, Go, Rust, etc. |
-| JS/TS developers want to embed it | Clean async `condenseMarkdown()` API with full type definitions |
-
----
-
-## Installation
-
-### From npm
+## Install
 
 ```bash
 npm install -g doc-lok   # CLI
 npm install doc-lok      # library
 ```
 
-### From source
+From source:
 
 ```bash
 git clone https://github.com/<your-org>/doc-lok.git
@@ -184,153 +52,257 @@ npm install
 npm run build
 ```
 
-The compiled output is emitted to `dist/`. The CLI binary is
-`dist/cli.js` and the library entry point is `dist/index.js`.
+Requires **Node.js ≥ 18**. Zero runtime dependencies — uses only
+Node.js built-in modules (`node:crypto`, `node:https`, `node:fs`,
+`node:path`). The optional `turndown` peer dependency is only needed
+for `--converter turndown`.
 
-### Prerequisites
+## Usage
 
-- **Node.js ≥ 18** (runtime — uses native `node:https`, `node:crypto`, `structuredClone`)
-- **Node.js ≥ 20.19** (development — vitest 4.x with rolldown requires `node:util.styleText`)
-- **TypeScript ≥ 5.4** (dev only, for building from source)
+### The basic workflow
 
-No runtime dependencies. `doc-lok` ships with zero `dependencies` in
-`package.json` — it relies exclusively on Node.js built-in modules.
+doc-lok operates on a single Markdown file. You run it, it writes
+processed Markdown to **stdout** and diagnostics to **stderr**, and it
+creates/updates a `.doc-lok/lock.json` lockfile in the same directory.
 
----
-
-## Quick Start
-
-### CLI Usage
+**Run 1 — cache warm-up.** Every URL is fetched. No links are condensed
+yet — the lockfile is populated so the *next* run can detect unchanged
+content. No savings on this run.
 
 ```bash
-# Basic — condensed Markdown to stdout, diagnostics to stderr
-doc-lok README.md
-
-# Quiet mode — stdout only, no diagnostic chatter
-doc-lok README.md --quiet
-
-# Explicit lockfile location
-doc-lok README.md --lockfile /tmp/my-lock.json
-
-# Pipe into another tool
-doc-lok README.md --quiet | python3 my-llm-prompter.py
-
-# Restore a previously condensed file back to full links
-doc-lok README.md --restore
+$ doc-lok README.md --quiet > condensed.md
+# (no savings — lockfile is being populated)
 ```
 
-**Example output (condense):**
+**Run 2+ — savings kick in.** URLs whose content hasn't changed are
+replaced with tiny markers. The prompt shrinks by ~5 tokens per
+unchanged link.
+
+```bash
+$ doc-lok README.md --quiet > condensed.md
+# unchanged links → <!-- doc-lok:cached#<sha> --> markers
+```
+
+Without `--quiet`, you get a diagnostic report on stderr:
 
 ```
-$ doc-lok README.md
-# My Project
-
-This is a project. See the docs <!-- doc-lok:cached#100680 --> for details.
-
 ─ doc-lok ──────────────────────────────
-  ✓ https://example.com/docs  [cached]  saved 342 tok
-  ↻ https://example.com/changelog  [updated]  saved 0 tok
-  ✗ https://example.com/broken  [error]  saved 0 tok  (GET https://example.com/broken → HTTP 503)
-  Total tokens saved this run: 342
-  Lockfile: /home/user/project/doc-lok.json
+  ✓ https://example.com/docs  [cached]  saved ~342 tok
+  ↻ https://example.com/changelog  [updated]  saved ~0 tok
+  ✗ https://example.com/broken  [error]  saved ~0 tok  (HTTP 503)
+  Total est. tokens saved this run: 342
+  Lockfile: /home/user/project/.doc-lok/lock.json
 ─────────────────────────────────────────
 ```
 
-**Example output (restore):**
+- **✓ cached** — content unchanged, link replaced with marker
+- **↻ updated** — content changed (or first run), link left intact
+- **✗ error** — request failed (DNS, timeout, HTTP error), link left intact
 
-```
-$ doc-lok README.md --restore
-# My Project
+### Choosing a mode
 
-This is a project. See the docs [https://example.com/docs](https://example.com/docs) for details.
-
-─ doc-lok restore ──────────────────────
-  Restored 1 link(s)
-  Lockfile: /home/user/project/doc-lok.json
-─────────────────────────────────────────
-```
-
-### Agent Integration
-
-`doc-lok` provides two CLI flags designed for LLM agents and automated workflows:
+**Condense (default)** — You have a Markdown file with links and want
+to shrink it before feeding it to an LLM. Unchanged links become
+markers; changed/new links stay visible. Best for repeat runs where
+most links haven't changed.
 
 ```bash
-# Check URL freshness without modifying the file (non-destructive)
-doc-lok README.md --check --json
-
-# Condense with structured JSON output (machine-readable)
-doc-lok README.md --json
-
-# Restore with structured JSON output
-doc-lok README.md --restore --json
+doc-lok README.md --quiet > condensed.md
 ```
 
-**`--check` mode** validates all URLs, updates the lockfile, but does **not**
-rewrite the Markdown file. Returns diagnostics + full lockfile state so the
-agent can inspect SHAs and decide whether to condense.
+**Inline (`--inline`)** — You want the LLM to *see* the content behind
+the links, not just the link text. doc-lok fetches each linked page,
+converts HTML to Markdown, and injects it under the link. By default
+only a table of contents is injected (~200 tokens). Use `--section` to
+control what gets inlined.
 
-**`--json` flag** outputs a structured JSON object to stdout instead of raw
-Markdown + human-readable diagnostics. The schema:
+```bash
+# TOC only (default) — tiny prompt, just section headings
+doc-lok README.md --inline --allow-private
+
+# Specific sections — only the parts you need
+doc-lok README.md --inline --allow-private --section authentication
+
+# Full body — everything
+doc-lok README.md --inline --allow-private --section all
+```
+
+The default (TOC only) and `--section <name>` save LLM tokens compared
+to an agent fetching the full page — instead of reading a 50K-token
+doc, the agent gets a ~200-token TOC or a 2K-token section. `--section all`
+injects the full body, so no LLM token savings vs. fetching it yourself
+— but you still save network/latency on repeat runs (HEAD-only, no body
+re-fetch) and get byte-identical prompts that unlock provider-side
+prompt caching.
+
+**Check (`--check`)** — You want to know if links are stale without
+modifying the file. Validates all URLs, updates the lockfile, but
+leaves the Markdown untouched. Useful before deciding whether to
+condense.
+
+```bash
+doc-lok README.md --check
+```
+
+**Restore (`--restore`)** — You have a condensed/inlined file and want
+the original links back. Reverses both `cached` markers and `inline`
+blocks, preserving the original anchor text. No network requests —
+uses the lockfile only.
+
+```bash
+doc-lok condensed.md --restore > original.md
+```
+
+### Piping to other tools
+
+stdout gets the processed Markdown; stderr gets diagnostics. This
+makes doc-lok safe to pipe:
+
+```bash
+# Python
+doc-lok docs/spec.md --quiet | python3 prompt.py
+
+# Go
+doc-lok docs/spec.md --quiet | ./my-go-binary
+
+# Capture diagnostics separately
+doc-lok README.md > condensed.md 2> diagnostics.log
+```
+
+### JSON output for automation
+
+`--json` outputs a structured JSON object to stdout instead of raw
+Markdown. Works with all modes:
+
+```bash
+doc-lok README.md --json           # condense
+doc-lok README.md --check --json   # check
+doc-lok README.md --restore --json # restore
+doc-lok README.md --inline --json  # inline
+```
+
+Schema (condense mode):
 
 ```json
 {
-  "mode": "check | condense | restore",
-  "output": "...",
-  "diagnostics": [{ "url": "...", "status": "cached|updated|error", "tokensSaved": 0, "message": "..." }],
+  "mode": "condense",
+  "output": "... condensed markdown ...",
+  "diagnostics": [
+    { "url": "https://example.com/docs", "status": "cached", "tokensSaved": 342 },
+    { "url": "https://example.com/broken", "status": "error", "tokensSaved": 0, "message": "HTTP 503" }
+  ],
   "tokensSaved": 342,
-  "lockfilePath": "/path/to/doc-lok.json",
-  "lockfile": { "version": 1, "global_tokens_saved": 0, "urls": { ... } }
+  "lockfilePath": "/home/user/project/.doc-lok/lock.json",
+  "lockfile": { "version": 3, "global_tokens_saved": 18432, "urls": { ... } }
 }
 ```
 
-On fatal errors with `--json`, the output is `{ "error": "message" }` with
-exit code 1.
+On fatal errors with `--json`: `{ "error": "message" }` with exit code 1.
+Per-URL errors are **not** fatal — they appear inside `diagnostics` with
+`status: "error"`.
 
-A **skill file** is included at `.windsurf/workflows/doc-lok.md` that teaches
-agents how to detect and use doc-lok automatically. See the full agent
-decision tree in that file.
-
-### Library Usage
+### Using as a library
 
 ```typescript
-import { condenseMarkdown, restoreMarkdown, checkMarkdown } from "doc-lok";
+import {
+  condenseMarkdown, inlineMarkdown, checkMarkdown, restoreMarkdown,
+} from "doc-lok";
 
-// Check URL freshness without modifying the file
+// Condense — replace unchanged links with markers
+const result = await condenseMarkdown("./README.md");
+console.log(result.output);         // condensed Markdown
+console.log(result.tokensSaved);    // tokens saved this run
+console.log(result.lockfilePath);   // .doc-lok/lock.json path
+console.log(result.lockfile);       // full lockfile state
+
+// Inline — fetch linked pages, inject content
+const inline = await inlineMarkdown("./README.md", undefined, {
+  allowPrivate: true,
+  sections: ["authentication"],     // specific sections, or ["all"], or [] for TOC
+});
+console.log(inline.output);
+console.log(inline.inlinedCount);
+
+// Check freshness (no file modification)
 const check = await checkMarkdown("./README.md");
 for (const diag of check.diagnostics) {
   console.log(`${diag.url}: ${diag.status}`);
 }
-console.log(check.lockfile);        // full lockfile state with SHAs
 
-// Condense
-const result = await condenseMarkdown("./README.md");
-console.log(result.output);         // condensed Markdown string
-console.log(result.tokensSaved);    // total tokens saved this run
-console.log(result.lockfilePath);   // path to the lockfile used
-console.log(result.lockfile);       // full lockfile state after run
-
-for (const diag of result.diagnostics) {
-  console.log(`${diag.url}: ${diag.status} (${diag.tokensSaved} tok saved)`);
-}
-
-// Restore
+// Restore — reverse condense/inline
 const restored = await restoreMarkdown("./condensed.md");
-console.log(restored.output);       // Markdown with links restored
-console.log(restored.restoredCount); // number of markers replaced
+console.log(restored.restoredCount);
 ```
 
----
+Additional exports: `validateUrl`, `convertHtmlToMarkdown`,
+`matchSections`, `slugifyHeading`, `readLockfile`, `writeLockfile`,
+`resolveLockfilePath`, `hashUrl`, `estimateTokens`, and cache functions
+(`readBody`, `readMarkdown`, `readIndex`, etc.). Full types included.
 
-## How It Works
+### Agent integration
 
-### The Lockfile
+An agent workflow file (`.windsurf/workflows/doc-lok.md` in the repo)
+teaches agents how to detect and use doc-lok automatically — when to
+check, condense, inline, or restore, with 11 explicit rules and a
+decision tree. The `--check --json` and `--json` flags provide
+machine-readable output for automated workflows.
 
-`doc-lok` maintains a JSON lockfile named `doc-lok.json` that persists
-cryptographic metadata for every URL it has seen. The structure:
+To use it with your IDE, copy the workflow file from the repo into your
+IDE's workflow/rules directory:
+
+```bash
+# Windsurf
+curl -fsSL https://raw.githubusercontent.com/<your-org>/doc-lok/main/.windsurf/workflows/doc-lok.md \
+  -o .windsurf/workflows/doc-lok.md
+
+# Cursor — adapt the format for .cursor/rules/
+# Claude Code — adapt for .claude/commands/
+```
+
+The workflow file is IDE-agnostic Markdown — the content works in any
+agent that reads workflow or rules files.
+
+## CLI reference
+
+```
+doc-lok <file.md> [mode] [options]
+
+Modes:
+  (default)         Condense — replace unchanged links with markers
+  --inline          Inline — fetch and inject linked content
+  --check           Check — validate URLs, don't modify the file
+  --restore         Restore — reverse condense/inline
+
+Options:
+  --section <name>    Section(s) to inline (repeatable). Special: "all", "toc"
+  --converter <mode>  HTML→Markdown: "minimal" (default) or "turndown"
+  --max-bytes <n>     Max inline body size in bytes (default 1048576)
+  --cache-dir <path>  Override .doc-lok/cache/ directory
+  --lockfile <path>   Override lockfile path
+  --allow-private     Allow private/loopback URLs (disables SSRF guard)
+  --json              Structured JSON output to stdout
+  -q, --quiet         Suppress stderr diagnostics
+  -V, --version       Print version
+  -h, --help          Show help
+
+Exit codes: 0 (success), 1 (fatal error), 2 (arg error)
+```
+
+stdout receives the condensed/restored Markdown (or JSON with `--json`).
+stderr receives human-readable diagnostics. Safe to pipe.
+
+Full CLI docs: [docs/cli-reference.md](./docs/cli-reference.md)
+Section guide: [docs/sections.md](./docs/sections.md)
+
+## How it works
+
+### Lockfile
+
+`.doc-lok/lock.json` stores per-URL metadata:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "global_tokens_saved": 18432,
   "urls": {
     "https://example.com/docs": {
@@ -338,617 +310,142 @@ cryptographic metadata for every URL it has seen. The structure:
       "etag": "\"abc123\"",
       "token_cost_raw": 357,
       "token_cost_compressed": 18,
-      "last_checked": "2026-06-27T08:36:00.000Z",
+      "last_checked": "2026-07-08T11:30:00.000Z",
       "cached": true,
-      "original_text": "read the docs"
+      "original_text": "documentation",
+      "converted": true,
+      "section_slugs": ["introduction", "authentication", "api-reference"]
     }
   }
 }
 ```
 
-| Field | Description |
-|---|---|
-| `version` | Schema version for forward compatibility (currently `1`). |
-| `global_tokens_saved` | Running total of tokens saved across all runs. Never resets. |
-| `urls` | Map of URL → metadata entry. |
-| `urls[*].last_known_sha256` | SHA-256 hex digest of the response body. |
-| `urls[*].etag` | HTTP `ETag` header value, or `null` if the server didn't provide one. |
-| `urls[*].token_cost_raw` | Estimated token cost of the raw content. |
-| `urls[*].token_cost_compressed` | Token cost after condensing (always `18` — the hash-embedded marker size). |
-| `urls[*].last_checked` | ISO-8601 timestamp of the last successful validation. |
-| `urls[*].cached` | `true` once this URL has been successfully cached/condensed. Used to avoid double-counting `global_tokens_saved` across repeated runs. |
-| `urls[*].original_text` | The original inline link text (e.g., `Documentation`). Stored so `--restore` can reconstruct `[Documentation](url)` instead of `[url](url)`. Only present when the text differs from the URL. |
+Lockfile resolution order (first match wins):
 
-The lockfile is written **atomically** (write-temp-then-rename) to prevent
-corruption from concurrent processes or crashes.
+1. `--lockfile <path>` argument
+2. `DOC_LOK_LOCKFILE` environment variable
+3. `.doc-lok/lock.json` in the Markdown file's directory
+4. `.doc-lok/lock.json` in `process.cwd()`
 
-### Network Validation Strategy
+The lockfile is written atomically (temp-file-then-rename) to prevent
+corruption from concurrent processes.
 
-`doc-lok` uses a two-phase strategy to minimise network overhead:
+### Network validation
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Phase 1: HEAD request (fast path)                      │
-│                                                         │
-│  • Send HTTP HEAD with no body transfer                 │
-│  • Extract ETag header                                  │
-│  • If ETag matches lockfile → UNCHANGED, skip to result │
-│                                                         │
-├─────────────────────────────────────────────────────────┤
-│  Phase 2: Streamed GET (fallback)                       │
-│                                                         │
-│  • Issue HTTP GET                                       │
-│  • Stream response body through incremental SHA-256     │
-│  • Each chunk is hashed then dropped — O(1) memory      │
-│  • Compare final digest to lockfile's last_known_sha256 │
-│  • Match → UNCHANGED | Mismatch → UPDATED               │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
+Two-phase strategy to minimize network overhead:
 
-**Why streaming?** A 100 MB remote resource would crash a naive
-`Buffer.concat()` approach. By feeding each chunk into
-`crypto.createHash('sha256')` and discarding it immediately, `doc-lok`
-maintains constant memory regardless of payload size.
+1. **HEAD request** — compare server ETag against lockfile. Match =
+   unchanged, no body transfer.
+2. **Streamed GET fallback** — when ETag is missing or mismatched, stream
+   the body through an incremental SHA-256 hasher (O(1) memory
+   regardless of payload size). Compare hash to lockfile.
 
-**Why HEAD first?** Many servers (CDNs, GitHub, S3) return reliable ETags.
-A matching ETag means the body hasn't changed — no need to download it at
-all. This turns a multi-megabyte transfer into a few hundred bytes of
-headers.
+Redirects (`301`/`302`/`307`/`308`) are followed automatically (up to 5
+hops), with SSRF re-check at each hop.
 
-**Redirects:** `301`, `302`, `307`, and `308` responses are followed
-automatically (up to a default of 5 hops). The lockfile key remains the
-original URL from the Markdown document, while validation is performed
-against the final redirected resource.
+### Inline cache
 
-### Token Savings Calculation
+`--inline` stores fetched content in `.doc-lok/cache/`:
 
-Token estimation uses the heuristic **≈4 characters per token** (standard
-for English text and code in modern tokenisers like tiktoken/cl100k_base).
+- `<sha>.raw` — original response body
+- `<sha>.md` — converted Markdown
+- `<sha>.index.json` — section index
 
-```
-token_cost_raw       = ceil(byteLength / 4)     // or ceil(url.length / 4) for HEAD-only
-token_cost_compressed = 18                       // fixed: "<!-- doc-lok:cached#hash -->"
-tokens_saved          = token_cost_raw - token_cost_compressed
-```
+Repeat runs with unchanged URLs are HEAD-only — no body re-fetch, no
+re-conversion. The converted Markdown and section index are cached on
+disk so they're free on repeat runs too.
 
-The `global_tokens_saved` field in the lockfile accumulates savings across
-all runs, giving you a running ROI metric.
+### Code-block awareness
 
----
-
-## Configuration
-
-### Lockfile Resolution
-
-`doc-lok` resolves the lockfile path in the following order (first match
-wins):
-
-| Priority | Source | Example |
-|---|---|---|
-| 1 | Explicit `lockfilePath` argument | `condenseMarkdown("file.md", "/tmp/lock.json")` |
-| 2 | `DOC_LOK_LOCKFILE` environment variable | `DOC_LOK_LOCKFILE=/tmp/lock.json doc-lok file.md` |
-| 3 | `doc-lok.json` in the Markdown file's directory | `/path/to/file.md` → `/path/to/doc-lok.json` |
-| 4 | `doc-lok.json` in `process.cwd()` | Fallback default |
-
-### Environment Variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `DOC_LOK_LOCKFILE` | Override lockfile path | (see resolution order above) |
-
----
-
-## API Reference
-
-### `checkMarkdown(filePath, lockfilePath?)`
-
-Validates all http(s) URLs in a Markdown file and updates the lockfile, but
-does **not** modify the Markdown file itself. Designed for agents and tools
-that need to check freshness before deciding whether to condense.
-
-```typescript
-import { checkMarkdown } from "doc-lok";
-
-const result = await checkMarkdown("./README.md");
-console.log(result.diagnostics);    // per-URL freshness status
-console.log(result.lockfile);       // full lockfile with SHAs + ETags
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `filePath` | `string` | Yes | Path to the Markdown file. |
-| `lockfilePath` | `string` | No | Explicit lockfile path. |
-
-**Returns:** `Promise<CheckResult>`
-
-### `condenseMarkdown(filePath, lockfilePath?)`
-
-Condenses a Markdown file by replacing unchanged remote **inline** links with an
-HTML comment marker. Reference-style definitions are validated but left intact.
-
-```typescript
-import { condenseMarkdown } from "doc-lok";
-
-const result = await condenseMarkdown("./README.md", "/custom/lock.json");
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `filePath` | `string` | Yes | Path to the Markdown file. |
-| `lockfilePath` | `string` | No | Explicit lockfile path. Overrides env var and auto-resolution. |
-
-**Returns:** `Promise<CondenseResult>`
-
-### `restoreMarkdown(filePath, lockfilePath?)`
-
-Restores a previously condensed Markdown file by replacing
-`<!-- doc-lok:cached#hash -->` markers back with `[url](url)` links using the
-lockfile as a lookup table.
-
-```typescript
-import { restoreMarkdown } from "doc-lok";
-
-const result = await restoreMarkdown("./condensed.md");
-console.log(result.restoredCount); // 5
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `filePath` | `string` | Yes | Path to the condensed Markdown file. |
-| `lockfilePath` | `string` | No | Explicit lockfile path. |
-
-**Returns:** `Promise<{ output: string; restoredCount: number; lockfilePath: string }>`
-
-### `validateUrl(url, options)`
-
-Validates a single URL using the HEAD-then-streamed-GET strategy.
-
-```typescript
-import { validateUrl } from "doc-lok";
-
-const result = await validateUrl("https://example.com", {
-  knownEtag: "\"abc123\"",
-  knownSha256: "9f86d0...",
-  timeoutMs: 10_000,
-});
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `url` | `string` | Yes | The HTTP(S) URL to validate. |
-| `options.knownEtag` | `string \| null` | No | Previously known ETag for fast-path comparison. |
-| `options.knownSha256` | `string \| null` | No | Previously known SHA-256 for content comparison. |
-| `options.timeoutMs` | `number` | No | Per-request timeout. Default: `15000`. |
-| `options.signal` | `AbortSignal` | No | Abort signal to cancel in-flight requests. |
-
-**Returns:** `Promise<ValidationResult>`
-
-### `readLockfile(path)` / `writeLockfile(path, data)`
-
-Read or write the `doc-lok.json` lockfile directly.
-
-```typescript
-import { readLockfile, writeLockfile } from "doc-lok";
-
-const lockfile = await readLockfile("./doc-lok.json");
-lockfile.global_tokens_saved += 100;
-await writeLockfile("./doc-lok.json", lockfile);
-```
-
-### Types
-
-```typescript
-interface CondenseResult {
-  output: string;              // condensed Markdown
-  diagnostics: LinkDiagnostic[];
-  tokensSaved: number;         // total saved this run
-  lockfilePath: string;        // lockfile path used
-  lockfile: Lockfile;          // full lockfile state after run
-}
-
-interface CheckResult {
-  diagnostics: LinkDiagnostic[];
-  tokensSaved: number;         // potential savings if condensed
-  lockfilePath: string;        // lockfile path used
-  lockfile: Lockfile;          // full lockfile state
-}
-
-interface LinkDiagnostic {
-  url: string;
-  status: "cached" | "updated" | "error";
-  tokensSaved: number;
-  message?: string;            // present only on error
-}
-
-interface Lockfile {
-  version: number;
-  global_tokens_saved: number;
-  urls: Record<string, UrlEntry>;
-}
-
-interface UrlEntry {
-  last_known_sha256: string;
-  etag: string | null;
-  token_cost_raw: number;
-  token_cost_compressed: number;
-  last_checked: string;        // ISO-8601
-  cached?: boolean;            // true once this URL has been successfully cached
-  original_text?: string;      // original anchor text for faithful restore
-}
-
-interface ValidationResult {
-  unchanged: boolean;
-  sha256: string;
-  etag: string | null;
-  byteLength: number;
-  tokenCost: number;
-}
-```
-
----
-
-## CLI Reference
-
-```
-doc-lok — pre-prompt context condenser
-
-USAGE
-  doc-lok <path-to-file.md> [mode] [options]
-
-MODES
-  (default)             Condense — replace unchanged links with markers.
-  --restore             Inflate — replace markers back with links.
-
-OPTIONS
-  --lockfile <path>   Path to an explicit doc-lok.json lockfile.
-  -q, --quiet         Suppress diagnostic output (stderr).
-  --json              Output structured JSON to stdout (machine-readable).
-  --check             Check URL freshness only — do not modify the file.
-  -V, --version       Print version and exit.
-  -h, --help          Show this help text.
-
-OUTPUT
-  Resulting Markdown is written to stdout.
-  Per-link diagnostics are written to stderr.
-  With --json, a structured JSON object is written to stdout instead.
-
-EXIT CODES
-  0   Success (all links processed, some may have errors).
-  1   Fatal error (file not found, unreadable, etc.).
-  2   Argument parsing error.
-```
-
-**Stdout / stderr separation:** The condensed Markdown is written
-exclusively to `stdout` and all diagnostics to `stderr`, so the tool is
-safe to pipe:
-
-```bash
-doc-lok README.md --quiet | llm-prompter
-```
-
-**Agent-friendly JSON output:**
-
-```bash
-# Check freshness without modifying the file
-doc-lok README.md --check --json
-
-# Condense with structured JSON output
-doc-lok README.md --json
-```
-
----
-
-## Project Structure
-
-```
-doc-lok/
-├── package.json          # Dual-purpose: "main"/"types" (library) + "bin" (CLI)
-├── tsconfig.json         # Strict TS → ES2022 ESM, emits to dist/
-├── vitest.config.ts      # Test runner configuration
-├── .gitignore            # Ignores node_modules, dist, lockfiles, env, editor files
-├── LICENSE               # MIT
-├── README.md             # You are here
-├── src/
-│   ├── index.ts          # Public API re-exports for library consumers
-│   ├── cli.ts            # Terminal entry point (process.argv parser → stdout)
-│   ├── parser.ts         # Link extraction, validation orchestration, restore, check
-│   ├── scanner.ts        # Code-block-aware Markdown link extraction
-│   ├── network.ts        # HEAD-first ETag fast-path → streamed SHA-256 GET
-│   └── state.ts          # Lockfile read/write, per-URL metadata, token estimation
-├── test/
-│   ├── state.test.ts     # Lockfile I/O, tokens, entry updates (15 tests)
-│   ├── network.test.ts   # ETag, SHA-256, errors, timeout (9 tests)
-│   ├── parser.test.ts    # Inline link condensing (9 tests)
-│   ├── parser-refs.test.ts  # Reference defs + restore (11 tests)
-│   ├── parser-codeblocks.test.ts  # Code-block-aware link exclusion (4 tests)
-│   ├── cli.test.ts       # CLI flags, exit codes (8 tests)
-│   ├── cli-restore.test.ts  # Restore CLI (3 tests)
-│   ├── cli-json.test.ts     # --json + --check CLI (8 tests)
-│   ├── checkMarkdown.test.ts  # checkMarkdown library API (6 tests)
-│   └── hashUrl.test.ts   # URL hashing (4 tests)
-├── .github/workflows/
-│   └── ci.yml            # GitHub Actions: build + test on Node 18/20/22
-└── docs/
-    ├── status.md         # Feature matrix, roadmap, build instructions
-    └── worklog.md        # Chronological development log
-```
-
-### Module Responsibilities
-
-| Module | Responsibility |
-|---|---|
-| `state.ts` | Manages `doc-lok.json` lifecycle: read, normalise, update entries, atomic write. Tracks `last_known_sha256`, `etag`, `token_cost_raw`, `token_cost_compressed`, `global_tokens_saved`. |
-| `network.ts` | HTTP validation engine. Phase 1: `HEAD` request to compare ETags (zero body transfer). Phase 2: streamed `GET` with incremental `crypto.createHash('sha256')` — chunks hashed and dropped, O(1) memory. |
-| `scanner.ts` | Code-block-aware Markdown link extractor. Tracks normal text vs. inline code, fenced code blocks, and indented code blocks so links inside code are never condensed. Exposes `extractInlineLinks()` and `extractRefDefs()`. |
-| `parser.ts` | Orchestrates the full pipeline: scan for inline `[text](url)` and reference `[ref]: url` patterns via `scanner.ts`, validate each unique URL via `network.ts`, update lockfile via `state.ts`, replace unchanged inline links with `<!-- doc-lok:cached#hash -->`. Also provides `restoreMarkdown()` to reverse the operation and `checkMarkdown()` for non-destructive freshness checks. |
-| `cli.ts` | `process.argv` parser (no external CLI library). Routes condensed Markdown to `stdout`, diagnostics to `stderr`. Supports `--json` for structured agent-readable output and `--check` for non-destructive freshness checks. Exit codes: 0 (ok), 1 (fatal), 2 (arg error). |
-| `index.ts` | Barrel file re-exporting the public API surface for `import { condenseMarkdown, checkMarkdown } from "doc-lok"`. |
-
----
-
-## Architecture Decisions
-
-### Zero runtime dependencies
-
-`doc-lok` uses only Node.js built-in modules (`node:crypto`, `node:http`,
-`node:https`, `node:fs`, `node:path`). This eliminates supply-chain risk,
-reduces install time, and ensures the package works in any Node ≥ 18
-environment without `node_modules` conflicts.
-
-### ESM-first
-
-The package uses `"type": "module"` and emits ES2022 ESM. This aligns with
-modern Node.js conventions and enables top-level await in consumers.
-
-### Sequential URL validation
-
-URLs are validated sequentially rather than concurrently. This:
-- Keeps memory usage predictable (one in-flight response at a time).
-- Avoids overwhelming a single host with parallel requests.
-- Prevents connection pool exhaustion on documents with many links.
-
-If you need concurrency, call `validateUrl()` directly with your own
-`Promise.allSettled()` pool.
+Links inside inline code, fenced code blocks, and indented code blocks
+are never touched — code examples stay readable and functional.
 
 ### Error isolation
 
-Each URL validation is wrapped in its own try/catch. A 503, DNS failure,
-or timeout on one link produces a `✗` diagnostic but never aborts the
-entire run. The condensed output still includes all other successfully
-validated links.
+Each URL is validated independently. A 503, DNS failure, or timeout on
+one link produces an error diagnostic but never aborts the entire run.
 
-### Code-block-aware scanning
+## Token savings — honestly
 
-`src/scanner.ts` walks through Markdown line-by-line and tracks whether it
-is inside inline code, a fenced code block, or an indented code block.
-Links inside code are never condensed, so documentation that contains
-`[example](https://example.com)` inside backticks or code fences stays
-readable and functional.
+The baseline for `--inline` and `--section` is **an agent fetching the full URL and reading the entire page** — not the original Markdown file with just a link. Nobody uses `--inline` if they don't want the content in the prompt.
 
-### Honest token accounting
+| Mode | What's saved | How much |
+|---|---|---|
+| Condense | LLM tokens (link text → 18-token marker) | ~5 tokens per unchanged link |
+| Inline (TOC default) | LLM tokens (full page → ~200-token TOC) | ~49,800 tokens per URL — agent sees the index, fetches only what it needs |
+| Inline (`--section <name>`) | LLM tokens (full page → only the requested section) | Varies — a 50K-token doc with a 2K-token section saves ~48K tokens |
+| Inline (`--section all`) | Network + latency only (HEAD-only repeat runs) | 0 LLM tokens vs. fetching the page yourself — same content, just pre-cached |
+| Summary *(roadmap)* | LLM tokens (full body → ~300-token summary) | ~49,700 tokens per URL on repeat runs |
 
-Token savings are only counted the first time a URL is successfully
-cached. The lockfile stores a `cached` flag per URL, so running `doc-lok`
-repeatedly on the same file does not inflate `global_tokens_saved` with
-the same savings over and over.
+All token counts are heuristic estimates (≈4 chars/token), not exact
+tokeniser measurements. Use them as a rough guide for comparing relative
+savings across runs, not as a billing figure.
 
-### Atomic lockfile writes
+A side benefit of `--inline`: byte-identical repeat prompts unlock
+**provider-side prompt caching** (Anthropic Claude, OpenAI both cache
+identical prompt prefixes and bill ~10x less for the cached segment).
 
-The lockfile is written via temp-file-then-rename (`fs.rename`), which is
-atomic on POSIX filesystems. This prevents corruption if the process is
-killed mid-write or if two `doc-lok` instances run concurrently on the
-same project.
+## Limitations
 
----
+- **HTTP(S) only.** Relative links, `mailto:`, and other schemes are
+  ignored.
+- **No authentication.** `doc-lok` sends no `Authorization` headers.
+  Private/authenticated URLs return 401/403 and are marked as errors.
+  This is a security boundary, not a missing feature.
+- **SSRF guard on by default.** Blocks loopback, link-local, and private
+  IP ranges. Use `--allow-private` to opt in for internal URLs.
+- **Sequential validation.** URLs are fetched one at a time. For
+  documents with hundreds of links, this may be slow. Use the library
+  API with `validateUrl()` directly if you need concurrent fetching.
+- **One level deep.** `--inline` fetches linked pages but does not
+  recursively follow links within them.
+- **`--check` still writes the lockfile.** The Markdown file is
+  untouched, but the lockfile is updated with current metadata.
+- **Same URL, different anchor texts.** The lockfile stores only the
+  last-seen anchor text. All restored markers for that URL will use it.
+- **Token estimates are approximate.** The 4-chars/token heuristic is a
+  rough guide, not a billing figure. CJK text is closer to 1 char/token;
+  URLs are token-dense.
+
+## Project structure
+
+```
+doc-lok/
+├── src/
+│   ├── index.ts      # Public API re-exports
+│   ├── cli.ts        # CLI entry point (argv parser → stdout/stderr)
+│   ├── parser.ts     # Condense, inline, restore, check orchestration
+│   ├── scanner.ts    # Code-block-aware Markdown link extraction
+│   ├── network.ts    # HEAD-first → streamed SHA-256 GET
+│   ├── state.ts      # Lockfile read/write, token estimation
+│   ├── cache.ts      # Body cache (.raw, .md, .index.json) for --inline
+│   ├── convert.ts    # HTML→Markdown converter + section detection
+│   ├── sections.ts   # Section matching (3-tier: exact → case-insensitive → contains)
+│   └── ssrf.ts       # SSRF guard (private/loopback/link-local blocking)
+├── test/             # Test suite (vitest)
+├── docs/
+│   ├── cli-reference.md
+│   └── sections.md
+└── package.json
+```
 
 ## Development
 
-### Building
-
 ```bash
-npm install          # install dev dependencies (typescript, @types/node)
-npm run build        # compile src/ → dist/ (tsc)
-npm run clean        # remove dist/
+npm install      # dev dependencies (typescript, @types/node, vitest)
+npm run build    # compile src/ → dist/ (tsc)
+npm test         # run test suite
+npm run clean    # remove dist/
 ```
-
-### Scripts
-
-| Script | Command | Description |
-|---|---|---|
-| `build` | `tsc` | Compile TypeScript to `dist/` with declarations + source maps. |
-| `test` | `vitest run` | Run the full test suite (79 tests, 10 files). |
-| `test:watch` | `vitest` | Run tests in watch mode during development. |
-| `start` | `node dist/cli.js` | Run the CLI directly (after build). |
-| `clean` | `rm -rf dist` | Remove build output. |
-
----
-
-## Integration Examples
-
-### Mastra Agent
-
-```typescript
-import { condenseMarkdown } from "doc-lok";
-import { Agent } from "@mastra/core/agent";
-
-const agent = new Agent({ /* ... */ });
-
-async function prepareContext(mdPath: string) {
-  const { output, tokensSaved } = await condenseMarkdown(mdPath);
-  console.log(`Saved ${tokensSaved} tokens before prompting.`);
-  return agent.generate(output);
-}
-```
-
-### Shell Pipeline (Python / Go / Rust)
-
-```bash
-# Python
-doc-lok docs/spec.md --quiet | python3 prompt.py
-
-# Go (reading from stdin)
-doc-lok docs/spec.md --quiet | ./my-go-binary
-
-# Rust
-doc-lok docs/spec.md --quiet | cargo run --bin prompter
-```
-
-### GitHub Actions
-
-```yaml
-- name: Condense docs before LLM step
-  run: |
-    npm install -g doc-lok
-    doc-lok docs/context.md --quiet > docs/condensed.md
-- name: Send to LLM
-  run: ./scripts/prompt-llm.sh docs/condensed.md
-```
-
----
-
-## Limitations & Caveats
-
-- **HTTP(S) only:** Only `http://` and `https://` URLs are processed. Relative links, `mailto:`, and other schemes are left untouched.
-- **Token estimation is approximate:** The 4-chars-per-token heuristic is an average. Actual token counts vary by tokeniser and content language. Use `token_cost_raw` as a rough guide, not an exact billing figure.
-- **ETag reliability varies:** Not all servers return ETags. When absent, `doc-lok` falls back to a full streamed GET + SHA-256 comparison. This is still efficient (O(1) memory) but transfers the full body.
-- **No recursive link following:** `doc-lok` condenses links *in the Markdown text* — it does not fetch and inline the content of linked pages. It only checks whether the remote resource has changed.
-- **Sequential validation:** URLs are fetched one at a time. For documents with hundreds of links, this may be slow. Use the library API with `validateUrl()` directly if you need concurrent fetching.
-- **Lockfile is per-project:** Each project directory gets its own `doc-lok.json`. There is no global cache. Use `--lockfile` or `DOC_LOK_LOCKFILE` to share a lockfile across projects.
-- **No authentication:** `doc-lok` does not send auth headers. Private/authenticated URLs will return 401/403 and be marked as errors.
-- **Same URL with different anchor texts:** If the same URL appears multiple times with different link text, the lockfile stores only the last-seen text. All restored markers for that URL will use that text.
-- **`--check` still updates the lockfile:** While the Markdown file is not modified in check mode, the lockfile is still written with current SHA-256 / ETag metadata. This is intentional — the lockfile should always reflect the latest known state of remote resources.
-
----
-
-## Future Features & Fixes
-
-> Public roadmap. Order indicates priority, not commitment dates.
-> Anything listed here is on the way; anything not listed here probably
-> isn't.
-
-### Up next — correctness & safety
-
-Before new features land, a handful of fixes are queued so the existing
-claims become fully honest and safe to run in CI:
-
-- **Longer marker hashes** — today's 6-hex-char slice is fine for small
-  projects but theoretically collision-prone after a few thousand unique
-  URLs. We'll widen it so `--restore` never silently rewrites the wrong
-  URL.
-- **Honest savings accounting** — `--check` currently mutates
-  `global_tokens_saved` in the lockfile, which can inflate the ROI
-  number. We'll make `--check` a pure projection.
-- **SSRF guard** — block loopback, link-local, RFC-1918, and cloud
-  metadata endpoints by default. Opt in to private ranges with
-  `--allow-private`. Required before running doc-lok on untrusted
-  Markdown in CI / agent workflows.
-- **Code-block-aware reference defs** — today `[ref]: https://…` lines
-  inside fenced code blocks are still validated and added to the
-  lockfile. We'll route ref-def extraction through the same code-state
-  machine as inline links.
-- **Accurate README on the ETag fast path** — the README mentions an
-  `If-None-Match` conditional that the implementation doesn't actually
-  send. We'll either send it (and accept `304 Not Modified`) or drop the
-  claim.
-
-### Then — the big one: `--inline` content fetching
-
-The most-requested capability (and the one most first-time readers
-assume "pre-prompt context condenser" already does): fetch the *content*
-of linked pages and cache that, not just the link text.
-
-- **`--inline` flag** — on first encounter of a URL, fetch the body,
-  store it, and inject a fenced block into the Markdown:
-
-  ```md
-  See [docs](https://example.com/docs):
-
-  <!-- doc-lok:inline#abc123
-  <fetched content here>
-  -->
-  ```
-
-  On re-run: unchanged URLs leave the inline block in place (no body
-  re-fetch). Changed URLs re-GET and replace the block. This is
-  literally the "fetch, cache, skip when stale" workflow.
-
-- **Separate cache directory** — lockfile keeps metadata (SHA / ETag /
-  timestamps); bodies live in `.doc-lok/cache/<sha>.raw`. Keeps the
-  JSON small and makes offline runs possible.
-- **`--max-bytes` and content-type allowlist** — default text/html
-  only, 1 MB cap. Refuses to inline binaries, PDFs, archives, or
-  oversized bodies.
-- **SSRF hardening for inline mode** — fetching *bodies* from arbitrary
-  URLs into prompts is a content-injection + exfiltration surface, not
-  just request forgery. Strict default-deny for private addresses.
-
-### After that — making the value legible
-
-- **Honest token accounting for inline** — `tokensSaved` will reflect
-  the token delta of content reuse (cached body vs no body), not just
-  link-text shrinking.
-- **`--diff` mode** — emit a line diff between the previously cached
-  body and the freshly fetched one. Staleness is only useful if you can
-  see *what changed*, not just whether a hash differs.
-
-### Later — production niceties
-
-Built only when a real user asks. We won't gold-plate ahead of demand.
-
-- **`--ttl <minutes>`** — skip the network entirely if `last_checked`
-  is recent. The true "don't observe this URL again" path.
-- **`--concurrency N`** — parallel validation for documents with many
-  links. Default capped (e.g. 8) to be polite to remote hosts.
-- **`--prune`** — remove lockfile entries not seen in the latest
-  Markdown. Pair with `--prune --dry-run` for safe previews.
-- **`--allow-host` / `--deny-host`** — per-host overrides on top of the
-  SSRF defaults. Useful for "trust internal `docs.example.corp` but
-  block everything else private."
-
-### What we won't build
-
-To keep doc-lok's identity focused:
-
-- **A full CommonMark parser.** The line-by-line state machine is good
-  enough; a CommonMark dependency would break the zero-dependency
-  promise for marginal correctness gains.
-- **A plugin / extension system.** New content-types ship as flags,
-  not hooks.
-- **Custom token-cost models.** The 4-bytes/token heuristic is fine;
-  pretending to be tiktoken adds complexity for no real billing win.
-- **Recursive link following.** doc-lok stays one level deep — it never
-  crawls linked pages.
-- **Authentication headers.** No `Authorization: Bearer …`. Private /
-  authenticated URLs return `401`/`403` and are marked as errors. This
-  is a security boundary, not a missing feature.
-
----
 
 ## Contributing
 
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feat/my-feature`.
-3. Build and test: `npm run build`.
-4. Commit with conventional commits: `feat: ...`, `fix: ...`, `docs: ...`.
-5. Open a pull request.
-
-### Guidelines
-
-- Keep zero runtime dependencies — use only Node.js built-ins.
-- Maintain strict TypeScript (`strict: true`, `noUnusedLocals`, `noUnusedParameters`).
-- All public API changes must be reflected in `src/index.ts` re-exports.
-- Update this README when adding CLI flags, API changes, or new modules.
-
----
+1. Fork, create a feature branch.
+2. Build and test: `npm run build && npm test`.
+3. Keep zero runtime dependencies — Node.js built-ins only.
+4. Maintain strict TypeScript (`strict: true`).
+5. Update README when adding CLI flags or API changes.
+6. Commit with conventional commits: `feat:`, `fix:`, `docs:`.
 
 ## License
 

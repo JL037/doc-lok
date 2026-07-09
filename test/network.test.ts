@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createServer, type Server } from "node:http";
-import { validateUrl } from "../src/network.js";
+import { validateUrl, type ValidateOptions } from "../src/network.js";
+
+// Tests hit a local-loopback HTTP server — opt into the SSRF guard.
+const v = (url: string, opts: ValidateOptions) =>
+  validateUrl(url, { ...opts, allowPrivate: true });
 
 describe("validateUrl", () => {
   let server: Server;
@@ -114,7 +118,7 @@ describe("validateUrl", () => {
   });
 
   it("short-circuits on matching ETag via HEAD only", async () => {
-    const result = await validateUrl(`http://localhost:${port}/etag-match`, {
+    const result = await v(`http://localhost:${port}/etag-match`, {
       knownEtag: '"abc123"',
       knownSha256: "old-sha",
     });
@@ -131,7 +135,7 @@ describe("validateUrl", () => {
   });
 
   it("falls through to GET when ETag mismatches", async () => {
-    const result = await validateUrl(`http://localhost:${port}/etag-mismatch`, {
+    const result = await v(`http://localhost:${port}/etag-mismatch`, {
       knownEtag: '"old-etag"',
       knownSha256: "old-sha",
     });
@@ -147,7 +151,7 @@ describe("validateUrl", () => {
   });
 
   it("falls through to GET when no previous ETag is known", async () => {
-    const result = await validateUrl(`http://localhost:${port}/etag-match`, {
+    const result = await v(`http://localhost:${port}/etag-match`, {
       knownEtag: null,
       knownSha256: null,
     });
@@ -161,7 +165,7 @@ describe("validateUrl", () => {
   });
 
   it("falls through to GET when server returns no ETag", async () => {
-    const result = await validateUrl(`http://localhost:${port}/no-etag`, {
+    const result = await v(`http://localhost:${port}/no-etag`, {
       knownEtag: null,
       knownSha256: null,
     });
@@ -177,7 +181,7 @@ describe("validateUrl", () => {
     const knownSha256 =
       "a9e1eab21ad1e5d5f5c7c6f8b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7";
 
-    const result = await validateUrl(
+    const result = await v(
       `http://localhost:${port}/unchanged-by-sha`,
       {
         knownEtag: null,
@@ -192,7 +196,7 @@ describe("validateUrl", () => {
 
   it("throws on 404 responses", async () => {
     await expect(
-      validateUrl(`http://localhost:${port}/404`, {
+      v(`http://localhost:${port}/404`, {
         knownEtag: null,
         knownSha256: null,
       }),
@@ -201,7 +205,7 @@ describe("validateUrl", () => {
 
   it("throws on 500 responses", async () => {
     await expect(
-      validateUrl(`http://localhost:${port}/500`, {
+      v(`http://localhost:${port}/500`, {
         knownEtag: null,
         knownSha256: null,
       }),
@@ -212,7 +216,7 @@ describe("validateUrl", () => {
     // Connect to a port with no listener — connection should fail or time out
     // well within 1ms on loopback, producing a network error.
     await expect(
-      validateUrl(`http://localhost:54321/slow`, {
+      v(`http://localhost:54321/slow`, {
         knownEtag: null,
         knownSha256: null,
         timeoutMs: 1,
@@ -221,7 +225,7 @@ describe("validateUrl", () => {
   });
 
   it("computes correct SHA-256 for known payload", async () => {
-    const result = await validateUrl(`http://localhost:${port}/no-etag`, {
+    const result = await v(`http://localhost:${port}/no-etag`, {
       knownEtag: null,
       knownSha256: null,
     });
@@ -234,7 +238,7 @@ describe("validateUrl", () => {
   });
 
   it("follows 302 redirects to validate the final resource", async () => {
-    const result = await validateUrl(`http://localhost:${port}/redirect`, {
+    const result = await v(`http://localhost:${port}/redirect`, {
       knownEtag: null,
       knownSha256: null,
     });
@@ -255,7 +259,7 @@ describe("validateUrl", () => {
   });
 
   it("follows redirects with relative Location headers", async () => {
-    const result = await validateUrl(
+    const result = await v(
       `http://localhost:${port}/redirect-relative`,
       {
         knownEtag: null,
@@ -268,7 +272,7 @@ describe("validateUrl", () => {
   });
 
   it("short-circuits when the final resource ETag matches", async () => {
-    const result = await validateUrl(`http://localhost:${port}/redirect`, {
+    const result = await v(`http://localhost:${port}/redirect`, {
       knownEtag: '"final-etag"',
       knownSha256: "old-sha",
     });
@@ -283,7 +287,7 @@ describe("validateUrl", () => {
 
   it("throws when redirect depth is exceeded", async () => {
     await expect(
-      validateUrl(`http://localhost:${port}/redirect-loop`, {
+      v(`http://localhost:${port}/redirect-loop`, {
         knownEtag: null,
         knownSha256: null,
         maxRedirects: 2,

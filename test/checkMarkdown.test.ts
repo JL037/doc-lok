@@ -6,6 +6,10 @@ import { createServer, type Server } from "node:http";
 
 import { checkMarkdown } from "../src/parser.js";
 
+// Tests hit a local-loopback HTTP server — opt into the SSRF guard.
+const check = (p: string, l?: string) =>
+  checkMarkdown(p, l, { allowPrivate: true });
+
 describe("checkMarkdown", () => {
   let tmpDir: string;
   let server: Server;
@@ -50,7 +54,7 @@ describe("checkMarkdown", () => {
     const mdPath = await writeMd("check.md", `[Link](${url})\n`);
     const original = await fs.readFile(mdPath, "utf8");
 
-    const result = await checkMarkdown(mdPath);
+    const result = await check(mdPath);
 
     expect(result.diagnostics).toHaveLength(1);
     expect(result.diagnostics[0].url).toBe(url);
@@ -67,8 +71,8 @@ describe("checkMarkdown", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("cached.md", `[Link](${url})\n`);
 
-    await checkMarkdown(mdPath);
-    const result = await checkMarkdown(mdPath);
+    await check(mdPath);
+    const result = await check(mdPath);
 
     expect(result.diagnostics[0].status).toBe("cached");
   });
@@ -77,7 +81,7 @@ describe("checkMarkdown", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("lockstate.md", `[Link](${url})\n`);
 
-    const result = await checkMarkdown(mdPath);
+    const result = await check(mdPath);
 
     const entry = result.lockfile.urls[url];
     expect(entry).toBeDefined();
@@ -91,7 +95,7 @@ describe("checkMarkdown", () => {
     const badUrl = `http://localhost:${port}/error`;
     const mdPath = await writeMd("mixed.md", `[Good](${goodUrl}) [Bad](${badUrl})\n`);
 
-    const result = await checkMarkdown(mdPath);
+    const result = await check(mdPath);
 
     expect(result.diagnostics).toHaveLength(2);
     const goodDiag = result.diagnostics.find((d) => d.url === goodUrl);
@@ -104,7 +108,7 @@ describe("checkMarkdown", () => {
 
   it("returns empty diagnostics for a file with no links", async () => {
     const mdPath = await writeMd("no-links.md", "# Hello\n\nNo URLs here.\n");
-    const result = await checkMarkdown(mdPath);
+    const result = await check(mdPath);
 
     expect(result.diagnostics).toHaveLength(0);
     expect(result.tokensSaved).toBe(0);
@@ -115,7 +119,7 @@ describe("checkMarkdown", () => {
     const mdPath = await writeMd("explicit.md", `[Link](${url})\n`);
     const customLock = path.join(tmpDir, "custom-lock.json");
 
-    const result = await checkMarkdown(mdPath, customLock);
+    const result = await check(mdPath, customLock);
     expect(result.lockfilePath).toBe(customLock);
 
     const lockExists = await fs

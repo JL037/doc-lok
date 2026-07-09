@@ -42,7 +42,7 @@ describe("CLI --json and --check", () => {
 
   function run(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
     return new Promise((resolve) => {
-      const child = spawn("node", [CLI, ...args], {
+      const child = spawn("node", [CLI, ...args, "--allow-private"], {
         cwd: process.cwd(),
         env: { ...process.env },
       });

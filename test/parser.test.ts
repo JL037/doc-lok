@@ -6,6 +6,11 @@ import { createServer, type Server } from "node:http";
 
 import { condenseMarkdown, MARKER } from "../src/parser.js";
 
+// Tests hit a local-loopback HTTP server, so we opt into the SSRF guard's
+// `allowPrivate` mode by default. Real users with public URLs do not.
+const condense = (p: string, l?: string) =>
+  condenseMarkdown(p, l, { allowPrivate: true });
+
 describe("condenseMarkdown", () => {
   let tmpDir: string;
   let server: Server;
@@ -63,12 +68,12 @@ describe("condenseMarkdown", () => {
 
   it("returns empty diagnostics for a file with no links", async () => {
     const mdPath = await writeMd("no-links.md", "# Hello\n\nNo URLs here.\n");
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     expect(result.output).toBe("# Hello\n\nNo URLs here.\n");
     expect(result.diagnostics).toHaveLength(0);
     expect(result.tokensSaved).toBe(0);
-    expect(result.lockfilePath).toBe(path.join(tmpDir, "doc-lok.json"));
+    expect(result.lockfilePath).toBe(path.join(tmpDir, ".doc-lok", "lock.json"));
   });
 
   it("replaces unchanged links with the marker on second run", async () => {
@@ -76,12 +81,12 @@ describe("condenseMarkdown", () => {
     const mdPath = await writeMd("stable.md", `[Stable Link](${url})\n`);
 
     // First run — new URL, should be "updated"
-    const run1 = await condenseMarkdown(mdPath);
+    const run1 = await condense(mdPath);
     expect(run1.diagnostics[0].status).toBe("updated");
     expect(run1.output).toContain(`[Stable Link](${url})`);
 
     // Second run — same ETag, should be "cached"
-    const run2 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
     expect(run2.diagnostics[0].status).toBe("cached");
     expect(run2.output).toContain(MARKER);
     expect(run2.output).not.toContain(`[Stable Link](${url})`);
@@ -91,21 +96,21 @@ describe("condenseMarkdown", () => {
     const url = `http://localhost:${port}/changed`;
     const mdPath = await writeMd("changed.md", `[Changed](${url})\n`);
 
-    const run1 = await condenseMarkdown(mdPath);
+    const run1 = await condense(mdPath);
     expect(run1.diagnostics[0].status).toBe("updated");
 
     // Simulate a server-side change by mutating the stored ETag and SHA-256.
     // Mutating only the SHA isn't enough because the HEAD request will see the
     // matching ETag and short-circuit. We must also invalidate the ETag so the
     // GET body is fetched and SHA-256 comparison runs.
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = JSON.parse(await fs.readFile(lockPath, "utf8"));
     lock.urls[url].etag = '"old-etag"';
     lock.urls[url].last_known_sha256 =
       "0000000000000000000000000000000000000000000000000000000000000000";
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
-    const run2 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
     expect(run2.diagnostics[0].status).toBe("updated");
     expect(run2.output).toContain(`[Changed](${url})`);
   });
@@ -118,7 +123,7 @@ describe("condenseMarkdown", () => {
       `[Good](${goodUrl}) and [Bad](${badUrl})\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     expect(result.diagnostics).toHaveLength(2);
     const goodDiag = result.diagnostics.find((d) => d.url === goodUrl);
@@ -139,7 +144,7 @@ describe("condenseMarkdown", () => {
       `[First](${url}) [Second](${url}) [Third](${url})\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     // Should only have 1 diagnostic despite 3 occurrences
     expect(result.diagnostics).toHaveLength(1);
@@ -156,7 +161,7 @@ describe("condenseMarkdown", () => {
       `[Relative](./local.md) [Mail](mailto:a@b.com) [FTP](ftp://x.com)\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     expect(result.diagnostics).toHaveLength(0);
     expect(result.output).toContain("[Relative](./local.md)");
     expect(result.output).toContain("[Mail](mailto:a@b.com)");
@@ -168,7 +173,7 @@ describe("condenseMarkdown", () => {
     const mdPath = await writeMd("explicit.md", `[Link](${url})\n`);
     const customLock = path.join(tmpDir, "custom-lock.json");
 
-    const result = await condenseMarkdown(mdPath, customLock);
+    const result = await condense(mdPath, customLock);
     expect(result.lockfilePath).toBe(customLock);
 
     const lockExists = await fs
@@ -182,7 +187,7 @@ describe("condenseMarkdown", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("title.md", `[Link](${url} "A Title")\n`);
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     expect(result.diagnostics).toHaveLength(1);
     expect(result.diagnostics[0].url).toBe(url);
   });
@@ -191,11 +196,11 @@ describe("condenseMarkdown", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("accum.md", `[Link](${url})\n`);
 
-    const run1 = await condenseMarkdown(mdPath);
-    const run2 = await condenseMarkdown(mdPath);
+    const run1 = await condense(mdPath);
+    const run2 = await condense(mdPath);
 
     const lock = JSON.parse(
-      await fs.readFile(path.join(tmpDir, "doc-lok.json"), "utf8"),
+      await fs.readFile(path.join(tmpDir, ".doc-lok", "lock.json"), "utf8"),
     );
 
     // First run adds savings, second run adds 0 because cached

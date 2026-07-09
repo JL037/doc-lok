@@ -6,6 +6,10 @@ import { createServer, type Server } from "node:http";
 
 import { condenseMarkdown, MARKER } from "../src/parser.js";
 
+// Tests hit a local-loopback HTTP server — opt into the SSRF guard.
+const condense = (p: string, l?: string) =>
+  condenseMarkdown(p, l, { allowPrivate: true });
+
 describe("Code block exclusion", () => {
   let tmpDir: string;
   let server: Server;
@@ -43,11 +47,11 @@ describe("Code block exclusion", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("inline-code.md", `Run \`[bad](${url})\` in your terminal.\n`);
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     // After a first run, the link is "updated".
     // After a second run (cache warm), the marker should NOT appear inside backticks.
-    const run2 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
 
     expect(run2.output).not.toContain("`<!-- doc-lok:cached");
     expect(run2.output).toContain(`[bad](${url})`);
@@ -62,8 +66,8 @@ describe("Code block exclusion", () => {
 \`\`\`\n`,
     );
 
-    const run2 = await condenseMarkdown(mdPath);
-    const run3 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
+    const run3 = await condense(mdPath);
 
     expect(run3.output).not.toContain("<!-- doc-lok:cached");
     expect(run3.output).toContain(`[bad](${url})`);
@@ -76,8 +80,8 @@ describe("Code block exclusion", () => {
       `    [bad](${url})\n`,
     );
 
-    const run2 = await condenseMarkdown(mdPath);
-    const run3 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
+    const run3 = await condense(mdPath);
 
     expect(run3.output).not.toContain("<!-- doc-lok:cached");
     expect(run3.output).toContain(`[bad](${url})`);
@@ -87,8 +91,8 @@ describe("Code block exclusion", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("normal.md", `[Good](${url})\n`);
 
-    const run1 = await condenseMarkdown(mdPath);
-    const run2 = await condenseMarkdown(mdPath);
+    const run1 = await condense(mdPath);
+    const run2 = await condense(mdPath);
 
     expect(run2.output).toContain(MARKER);
     expect(run2.output).not.toContain(`[Good](${url})`);

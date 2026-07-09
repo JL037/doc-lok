@@ -6,6 +6,12 @@ import { createServer, type Server } from "node:http";
 
 import { condenseMarkdown, restoreMarkdown, checkMarkdown, MARKER } from "../src/parser.js";
 
+// Tests hit a local-loopback HTTP server — opt into the SSRF guard.
+const condense = (p: string, l?: string) =>
+  condenseMarkdown(p, l, { allowPrivate: true });
+const check = (p: string, l?: string) =>
+  checkMarkdown(p, l, { allowPrivate: true });
+
 describe("Reference-style link support", () => {
   let tmpDir: string;
   let server: Server;
@@ -52,7 +58,7 @@ describe("Reference-style link support", () => {
       `[OpenAI]: ${url}\n\nCheck out [OpenAI] for more info.\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     // The definition line should still be present.
     expect(result.output).toContain(`[OpenAI]: ${url}`);
@@ -70,11 +76,11 @@ describe("Reference-style link support", () => {
       `[inline](${inlineUrl})\n[OpenAI]: ${refUrl}\n`,
     );
 
-    const run1 = await condenseMarkdown(mdPath);
+    const run1 = await condense(mdPath);
     expect(run1.output).toContain(`[inline](${inlineUrl})`);
     expect(run1.output).toContain(`[OpenAI]: ${refUrl}`);
 
-    const run2 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
     expect(run2.output).toContain(MARKER);
     expect(run2.output).toContain(`[OpenAI]: ${refUrl}`);
   });
@@ -86,7 +92,7 @@ describe("Reference-style link support", () => {
       `[OpenAI]: <${url}>\n\nCheck out [OpenAI].\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     expect(result.output).toContain(`[OpenAI]: <${url}>`);
     expect(requestLog.some((r) => r.url === "/stable")).toBe(true);
   });
@@ -98,7 +104,7 @@ describe("Reference-style link support", () => {
       `[OpenAI]: ${url} "OpenAI Homepage"\n[Github]: ${url} 'GitHub Repo'\n[NPM]: ${url} (npm package)\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     expect(result.output).toContain(`[OpenAI]: ${url} "OpenAI Homepage"`);
     expect(result.output).toContain(`[Github]: ${url} 'GitHub Repo'`);
     expect(result.output).toContain(`[NPM]: ${url} (npm package)`);
@@ -110,7 +116,7 @@ describe("Reference-style link support", () => {
       `[local]: ./readme.md\n[mail]: mailto:a@b.com\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     expect(result.diagnostics).toHaveLength(0);
     expect(result.output).toContain("[local]: ./readme.md");
     expect(result.output).toContain("[mail]: mailto:a@b.com");
@@ -123,7 +129,7 @@ describe("Reference-style link support", () => {
       `[OpenAI]: ${url}\n[Alt]: ${url}\n`,
     );
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
 
     // Should only validate once despite two definitions.
     const headCount = requestLog.filter(
@@ -139,7 +145,7 @@ describe("Reference-style link support", () => {
     const url = `http://localhost:${port}/stable`;
     const mdPath = await writeMd("ref-only.md", `[OpenAI]: ${url}\n`);
 
-    const result = await condenseMarkdown(mdPath);
+    const result = await condense(mdPath);
     // Reference defs are not replaced, so no token savings.
     expect(result.tokensSaved).toBe(0);
   });
@@ -180,7 +186,7 @@ describe("restoreMarkdown", () => {
   }
 
   it("restores markers back to links using the lockfile", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 100,
@@ -194,7 +200,7 @@ describe("restoreMarkdown", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const { hashUrl } = await import("../src/state.js");
     const hash = hashUrl("https://example.com");
@@ -213,26 +219,28 @@ describe("restoreMarkdown", () => {
   });
 
   it("leaves unknown markers in place", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 0,
       urls: {},
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const mdPath = await writeMd(
       "unknown.md",
-      "# Hello\n\nVisit <!-- doc-lok:cached#000000 --> for details.\n",
+      "# Hello\n\nVisit <!-- doc-lok:cached#0000000000000000000000000000000000000000000000000000000000000000 --> for details.\n",
     );
 
     const result = await restoreMarkdown(mdPath, lockPath);
-    expect(result.output).toContain("<!-- doc-lok:cached#000000 -->");
+    expect(result.output).toContain(
+      "<!-- doc-lok:cached#0000000000000000000000000000000000000000000000000000000000000000 -->",
+    );
     expect(result.restoredCount).toBe(0);
   });
 
   it("restores multiple distinct markers", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 0,
@@ -253,7 +261,7 @@ describe("restoreMarkdown", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     // Compute hashes manually to craft the marker.
     const { hashUrl } = await import("../src/state.js");
@@ -274,11 +282,11 @@ describe("restoreMarkdown", () => {
   it("returns the lockfile path used", async () => {
     const mdPath = await writeMd("simple.md", "# Hello\n");
     const result = await restoreMarkdown(mdPath);
-    expect(result.lockfilePath).toBe(path.join(tmpDir, "doc-lok.json"));
+    expect(result.lockfilePath).toBe(path.join(tmpDir, ".doc-lok", "lock.json"));
   });
 
   it("restores the original anchor text when present in the lockfile", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 2,
       global_tokens_saved: 100,
@@ -293,7 +301,7 @@ describe("restoreMarkdown", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const { hashUrl } = await import("../src/state.js");
     const hash = hashUrl("https://example.com");
@@ -310,7 +318,7 @@ describe("restoreMarkdown", () => {
   });
 
   it("falls back to URL as link text when original_text is absent", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 100,
@@ -324,7 +332,7 @@ describe("restoreMarkdown", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const { hashUrl } = await import("../src/state.js");
     const hash = hashUrl("https://example.com");
@@ -349,9 +357,9 @@ describe("restoreMarkdown", () => {
     );
 
     // First run warms the lockfile and stores original_text.
-    await condenseMarkdown(mdPath);
+    await condense(mdPath);
     // Second run condenses the link.
-    const run2 = await condenseMarkdown(mdPath);
+    const run2 = await condense(mdPath);
     expect(run2.output).toContain(MARKER);
 
     // Write the condensed output so restore has markers to inflate.
@@ -370,8 +378,8 @@ describe("restoreMarkdown", () => {
       `# Hello\n\nRead the [Docs](${url}).\n`,
     );
 
-    await condenseMarkdown(mdPath);
-    await checkMarkdown(mdPath);
+    await condense(mdPath);
+    await check(mdPath);
 
     const restored = await restoreMarkdown(mdPath);
     expect(restored.output).toContain(`[Docs](${url})`);
@@ -384,8 +392,8 @@ describe("restoreMarkdown", () => {
       `# Hello\n\n[A](${url}) and [B](${url}).\n`,
     );
 
-    await condenseMarkdown(mdPath);
-    const run2 = await condenseMarkdown(mdPath);
+    await condense(mdPath);
+    const run2 = await condense(mdPath);
     expect(run2.output.match(new RegExp(MARKER, "g"))?.length).toBe(2);
 
     // Write the condensed output so restore has markers to inflate.

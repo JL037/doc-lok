@@ -37,7 +37,7 @@ describe("CLI", () => {
 
   function run(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
     return new Promise((resolve) => {
-      const child = spawn("node", [CLI, ...args], {
+      const child = spawn("node", [CLI, ...args, "--allow-private"], {
         cwd: process.cwd(),
         env: { ...process.env },
       });
@@ -67,7 +67,7 @@ describe("CLI", () => {
   it("prints version with --version", async () => {
     const { stdout, stderr, code } = await run(["--version"]);
     expect(code).toBe(0);
-    expect(stdout).toContain("0.2.0");
+    expect(stdout).toContain("0.2.2");
   });
 
   it("exits with code 2 when no file given", async () => {

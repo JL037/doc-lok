@@ -11,10 +11,8 @@ out/
 # TypeScript build info
 *.tsbuildinfo
 
-# Lockfile (runtime artifact — each project should generate its own)
-doc-lok.json
-doc-lok.json.tmp
-doc-lok.json.*.tmp
+# doc-lok runtime directory (lockfile + cache; each project generates its own)
+.doc-lok/
 
 # Logs
 logs/
@@ -58,3 +56,4 @@ demo/
 *.tar.gz
 ROADMAP.md
 TODO.md
+scratch/

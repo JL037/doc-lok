@@ -13,10 +13,11 @@
 - [Installation](#installation)
 - [System Requirements](#system-requirements)
 - [Quick Start](#quick-start)
-- [The Three Modes](#the-three-modes)
+- [The Four Modes](#the-four-modes)
   - [Condense (default)](#1-condense-default)
   - [Restore (`--restore`)](#2-restore---restore)
   - [Check (`--check`)](#3-check---check)
+  - [Inline (`--inline`)](#4-inline---inline)
 - [Flags Reference](#flags-reference)
 - [Output Channels](#output-channels-stdout--stderr)
 - [JSON Output Schema](#json-output-schema)
@@ -31,6 +32,7 @@
   - [Agent / LLM integration](#2-agent--llm-integration)
   - [GitHub Actions](#3-github-actions)
   - [Condense → edit → restore round-trip](#4-condense--edit--restore-round-trip)
+  - [Inline specific sections](#5-inline-specific-sections)
 - [Condense vs. Check: When to Use Which](#condense-vs-check-when-to-use-which)
 - [Environment Variables](#environment-variables)
 - [Troubleshooting](#troubleshooting)
@@ -46,9 +48,8 @@
 2. Validates each link against the remote server (using a SHA-256 + ETag lockfile to detect change).
 3. Replaces **unchanged inline links** with a tiny HTML comment marker — shrinking the prompt.
 4. Leaves **changed or new links** intact so the LLM can see them.
-5. (Optional) Reverses the operation with `--restore`, inflating markers back into links.
-
-It does **not** fetch and inline remote page *content* — only link text. See [Limitations](#limitations--known-caveats).
+5. (Optional) Fetches linked page content with `--inline`, converts HTML to Markdown, and injects it under each link. Use `--section` to control what gets inlined — a single section instead of a full page saves tens of thousands of tokens.
+6. (Optional) Reverses condense/inline with `--restore`, inflating markers back into links.
 
 ---
 
@@ -102,19 +103,25 @@ doc-lok README.md > condensed.md
 # 3. Pipe-friendly mode (no stderr noise)
 doc-lok README.md --quiet | llm-prompter
 
-# 4. Reverse the condense operation
+# 4. Inline — fetch linked pages, inject content (TOC only by default)
+doc-lok README.md --inline
+
+# 5. Inline a specific section — biggest token savings
+doc-lok README.md --inline --section authentication
+
+# 6. Reverse the condense/inline operation
 doc-lok condensed.md --restore
 
-# 5. Check link freshness without rewriting the file
+# 7. Check link freshness without rewriting the file
 doc-lok README.md --check
 
-# 6. Structured JSON output for agents
+# 8. Structured JSON output for agents
 doc-lok README.md --check --json
 ```
 
 ---
 
-## The Three Modes
+## The Four Modes
 
 ### 1. Condense (default)
 
@@ -151,7 +158,7 @@ doc-lok condensed.md --restore
 ```
 ─ doc-lok restore ──────────────────────
   Restored 3 link(s)
-  Lockfile: /path/to/doc-lok.json
+  Lockfile: /path/to/.doc-lok/lock.json
 ─────────────────────────────────────────
 ```
 
@@ -171,6 +178,44 @@ doc-lok README.md --check
 
 ---
 
+### 4. Inline (`--inline`)
+
+**What it does:** Fetches each linked page, converts HTML to Markdown, and injects the content under the link. By default, only a ~200-token table of contents is injected. Use `--section` to control what gets inlined — this is where the largest token savings come from.
+
+```bash
+# TOC only (default) — ~200 tokens per page
+doc-lok README.md --inline
+
+# Specific section — only the parts you need
+doc-lok README.md --inline --section authentication
+
+# Multiple sections
+doc-lok README.md --inline --section authentication --section api-reference
+
+# Full body — everything
+doc-lok README.md --inline --section all
+```
+
+**Token savings with `--section`:**
+
+| What you inline | Token cost | Savings vs. full page |
+|---|---|---|
+| TOC only (default) | ~200 tokens | ~49,800 tokens per URL |
+| Specific section | ~2,000 tokens | ~48,000 tokens per URL |
+| Full body (`--section all`) | ~50,000 tokens | 0 tokens (same content, but network/latency savings on repeat runs) |
+
+**Repeat runs:** URLs whose content hasn't changed are HEAD-only — no body re-fetch. The converted Markdown and section index are cached on disk in `.doc-lok/cache/` so they're free on repeat runs too.
+
+**Internal URLs:** By default, doc-lok blocks private/loopback/link-local IP ranges (SSRF guard). Use `--allow-private` to fetch internal URLs:
+
+```bash
+doc-lok README.md --inline --allow-private
+```
+
+**Section matching:** Section names are matched using a 3-tier strategy: exact slug match → case-insensitive match → contains match. See [docs/sections.md](./sections.md) for details.
+
+---
+
 ## Flags Reference
 
 ### Synopsis
@@ -185,18 +230,27 @@ Order does not matter, but the first non-flag argument is treated as the markdow
 
 | Flag | Short | Type | Description |
 |------|-------|------|-------------|
-| `--restore` | — | mode | Restore markers back into links. Mutually exclusive with `--check`. |
-| `--check` | — | mode | Check freshness only; don't rewrite the file. Mutually exclusive with `--restore`. |
-| `--lockfile <path>` | — | string | Path to an explicit `doc-lok.json` lockfile. Overrides env var and auto-resolution. |
+| `--restore` | — | mode | Restore markers back into links. Mutually exclusive with `--check` and `--inline`. |
+| `--check` | — | mode | Check freshness only; don't rewrite the file. Mutually exclusive with `--restore` and `--inline`. |
+| `--inline` | — | mode | Inline — fetch linked pages, convert to Markdown, inject under links. Mutually exclusive with `--check` and `--restore`. |
+| `--section <name>` | — | string (repeatable) | Section(s) to inline. Special values: `all` (full body), `toc` (TOC only). Default (no `--section`): TOC only. |
+| `--converter <mode>` | — | string | HTML→Markdown converter: `"minimal"` (default) or `"turndown"` (requires `turndown` peer dep). |
+| `--max-bytes <n>` | — | int | Max inline body size in bytes (default 1,048,576 = 1 MB). |
+| `--cache-dir <path>` | — | string | Override the `.doc-lok/cache/` directory used by `--inline`. |
+| `--lockfile <path>` | — | string | Path to an explicit `.doc-lok/lock.json` lockfile. Overrides env var and auto-resolution. |
+| `--allow-private` | — | bool | Allow URLs that resolve to private / loopback / link-local ranges. Disables SSRF guard. |
 | `--quiet` | `-q` | bool | Suppress human-readable diagnostics on stderr. Condensed markdown still goes to stdout. |
 | `--json` | — | bool | Emit structured JSON on stdout instead of raw markdown + diagnostics. See [JSON Output Schema](#json-output-schema). |
-| `--version` | `-V` | bool | Print version (`doc-lok v0.2.0`) and exit. |
+| `--version` | `-V` | bool | Print version (`doc-lok v0.2.1`) and exit. |
 | `--help` | `-h` | bool | Print help text and exit. |
 
 ### Mode interaction
 
 - If both `--restore` and `--check` are passed, behaviour is determined by parse order — `--check` is checked first in the CLI's `if/else` chain, so `--check` wins. Don't rely on this; pass only one mode.
-- `--json` is independent of mode — it works with condense, restore, and check.
+- `--inline` is a separate mode — pass `--inline` without `--check` or `--restore`.
+- `--section` is a modifier for `--inline` only. It has no effect in condense, check, or restore modes.
+- `--allow-private` works with all modes that fetch URLs (condense, check, inline).
+- `--json` is independent of mode — it works with condense, restore, check, and inline.
 
 ### `--lockfile` details
 
@@ -255,9 +309,9 @@ All success responses share these top-level keys:
 
 ```jsonc
 {
-  "mode": "condense | restore | check",
+  "mode": "condense | restore | check | inline",
   "output": "... the rewritten markdown ...",
-  "lockfilePath": "/path/to/doc-lok.json",
+  "lockfilePath": "/path/to/.doc-lok/lock.json",
   "lockfile": { /* full lockfile state, see Lockfile section */ }
 }
 ```
@@ -274,10 +328,29 @@ All success responses share these top-level keys:
     { "url": "https://example.com/broken", "status": "error", "tokensSaved": 0, "message": "..." }
   ],
   "tokensSaved": 342,
-  "lockfilePath": "/home/user/project/doc-lok.json",
+  "lockfilePath": "/home/user/project/.doc-lok/lock.json",
   "lockfile": { /* ... */ }
 }
 ```
+
+### Inline
+
+```jsonc
+{
+  "mode": "inline",
+  "output": "# My Project\n\nSee [Documentation](https://example.com/docs) for details.\n\n<!-- doc-lok:inline#abc123 -->\n## Table of Contents\n- [Authentication](#authentication)\n- [API Reference](#api-reference)\n<!-- /doc-lok:inline -->\n",
+  "diagnostics": [
+    { "url": "https://example.com/docs", "status": "cached", "tokensSaved": 0 }
+  ],
+  "tokensSaved": 0,
+  "inlinedCount": 1,
+  "cacheDir": "/home/user/project/.doc-lok/cache",
+  "lockfilePath": "/home/user/project/.doc-lok/lock.json",
+  "lockfile": { /* ... */ }
+}
+```
+
+Note: `inlinedCount` and `cacheDir` are only present in inline mode.
 
 ### Restore
 
@@ -286,7 +359,7 @@ All success responses share these top-level keys:
   "mode": "restore",
   "output": "# My Project\n\nSee [Documentation](https://example.com/docs) for details.\n",
   "restoredCount": 1,
-  "lockfilePath": "/home/user/project/doc-lok.json",
+  "lockfilePath": "/home/user/project/.doc-lok/lock.json",
   "lockfile": { /* ... */ }
 }
 ```
@@ -301,7 +374,7 @@ All success responses share these top-level keys:
     ...
   ],
   "tokensSaved": 342,
-  "lockfilePath": "/home/user/project/doc-lok.json",
+  "lockfilePath": "/home/user/project/.doc-lok/lock.json",
   "lockfile": { /* ... */ }
 }
 ```
@@ -353,13 +426,13 @@ If you want the CLI to fail on any URL error, parse the JSON output and check `d
 
 ## The Lockfile
 
-`doc-lok` maintains a JSON lockfile (`doc-lok.json`) that persists SHA-256 digests, ETags, and token-savings metadata for every URL it has seen.
+`doc-lok` maintains a JSON lockfile (`.doc-lok/lock.json`) that persists SHA-256 digests, ETags, and token-savings metadata for every URL it has seen.
 
 ### Schema
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "global_tokens_saved": 18432,
   "urls": {
     "https://example.com/docs": {
@@ -379,7 +452,7 @@ If you want the CLI to fail on any URL error, parse the JSON output and check `d
 
 | Field | Description |
 |---|---|
-| `version` | Schema version for forward compatibility (currently `2`). |
+| `version` | Schema version for forward compatibility (currently `3`). |
 | `global_tokens_saved` | Running total of tokens saved across all runs. |
 | `urls` | Map of URL → metadata entry. |
 | `urls[*].last_known_sha256` | SHA-256 hex digest of the response body. |
@@ -389,6 +462,8 @@ If you want the CLI to fail on any URL error, parse the JSON output and check `d
 | `urls[*].last_checked` | ISO-8601 timestamp of the last successful validation. |
 | `urls[*].cached` | `true` once this URL has been successfully cached. Prevents double-counting savings. |
 | `urls[*].original_text` | Original anchor text (e.g., `Documentation`). Stored so `--restore` can reconstruct `[Documentation](url)` instead of `[url](url)`. Only present when the text differs from the URL. |
+| `urls[*].converted` | `true` if the page has been fetched and converted to Markdown by `--inline`. Indicates inline cache is populated. |
+| `urls[*].section_slugs` | Array of section heading slugs discovered during `--inline` conversion. Used for `--section` matching. |
 
 ### Lockfile resolution
 
@@ -398,8 +473,8 @@ The lockfile path is resolved in this order (first match wins):
 |---|---|---|
 | 1 | Explicit `--lockfile` argument | `doc-lok README.md --lockfile /tmp/custom.json` |
 | 2 | `DOC_LOK_LOCKFILE` environment variable | `DOC_LOK_LOCKFILE=/tmp/lock.json doc-lok README.md` |
-| 3 | `doc-lok.json` in the Markdown file's directory | `/path/to/file.md` → `/path/to/doc-lok.json` |
-| 4 | `doc-lok.json` in `process.cwd()` | Fallback default |
+| 3 | `.doc-lok/lock.json` in the Markdown file's directory | `/path/to/file.md` → `/path/to/.doc-lok/lock.json` |
+| 4 | `.doc-lok/lock.json` in `process.cwd()` | Fallback default |
 
 Note: priority 3 and 4 collapse — `path.dirname(path.resolve(mdFilePath))` is used, so if `mdFilePath` is in the cwd, both resolve to the same file.
 
@@ -407,17 +482,17 @@ Note: priority 3 and 4 collapse — `path.dirname(path.resolve(mdFilePath))` is 
 
 The lockfile is written **atomically** via write-temp-then-rename:
 
-1. `doc-lok.json.<pid>.tmp` is written.
+1. `.doc-lok/lock.json.<pid>.tmp` is written.
 2. `fs.rename(tmp, lockfile)` is called — atomic on POSIX.
 
 This prevents corruption if the process is killed mid-write. It does **not** prevent two `doc-lok` processes from clobbering each other's lockfile updates if they run concurrently in the same project (the temp filename uses PID, so no corruption, but the last-writer wins).
 
 ### Committing the lockfile
 
-The lockfile is a runtime artifact. By default, `.gitignore` excludes `doc-lok.json`. If you want to share cached state across CI / teammates who use the same links, commit it explicitly:
+The lockfile is a runtime artifact. By default, `.gitignore` excludes `.doc-lok/`. If you want to share cached state across CI / teammates who use the same links, commit it explicitly:
 
 ```bash
-git add -f doc-lok.json
+git add -f .doc-lok/lock.json
 git commit -m "chore: share doc-lok cache"
 ```
 
@@ -504,6 +579,28 @@ For documents with many links, expect the total runtime to be roughly `(N × per
 ### TLS / certificate handling
 
 Standard Node.js TLS verification applies. Self-signed or invalid certs will cause a network error per-URL (not fatal). There's currently no `--insecure` flag.
+
+### SSRF guard
+
+By default, `doc-lok` blocks URLs that resolve to private, loopback, or link-local IP ranges (`10.x.x.x`, `127.x.x.x`, `169.254.x.x`, `192.168.x.x`, etc.). This prevents SSRF attacks when running on untrusted Markdown.
+
+Use `--allow-private` to disable the guard and allow internal URLs:
+
+```bash
+doc-lok README.md --inline --allow-private
+```
+
+The SSRF guard is re-checked at each redirect hop — a public URL that redirects to a private IP is still blocked.
+
+### Inline cache (`--inline` only)
+
+`--inline` stores fetched content in `.doc-lok/cache/`:
+
+- `<sha>.raw` — original response body
+- `<sha>.md` — converted Markdown
+- `<sha>.index.json` — section index (heading slugs, positions)
+
+Repeat runs with unchanged URLs are HEAD-only — no body re-fetch, no re-conversion. The converted Markdown and section index are cached on disk so they're free on repeat runs too.
 
 ---
 
@@ -595,10 +692,20 @@ doc-lok README.md --json > condense.json
 # The agent reads condense.json.output and uses that as the prompt.
 ```
 
+For agentic workflows where the LLM needs the content behind links, use `--inline` with `--section` to inject only the relevant parts — this is where the largest token savings come from:
+
+```bash
+# Inline a specific section — ~2K tokens instead of ~50K for the full page
+doc-lok README.md --inline --section authentication --json > inline.json
+
+# The agent reads inline.json.output, which contains the original markdown
+# with the linked page's authentication section injected under the link.
+```
+
 Library-level integration (TypeScript):
 
 ```typescript
-import { condenseMarkdown, checkMarkdown } from "doc-lok";
+import { condenseMarkdown, checkMarkdown, inlineMarkdown } from "doc-lok";
 
 const check = await checkMarkdown("./README.md");
 for (const d of check.diagnostics) {
@@ -607,6 +714,14 @@ for (const d of check.diagnostics) {
 
 const condensed = await condenseMarkdown("./README.md");
 console.log(condensed.output);
+
+// Inline a specific section — biggest token savings
+const inlined = await inlineMarkdown("./README.md", undefined, {
+  allowPrivate: true,
+  sections: ["authentication"],     // specific sections, or ["all"], or [] for TOC
+});
+console.log(inlined.output);
+console.log(inlined.inlinedCount);
 ```
 
 ### 3. GitHub Actions
@@ -622,7 +737,7 @@ console.log(condensed.output);
   run: ./scripts/prompt-llm.sh docs/condensed.md
 ```
 
-**Warning:** If you run `doc-lok` in CI on Markdown sources you don't fully trust, the URLs in that Markdown will be fetched from the CI runner. There's currently no SSRF guard. Don't run it on untrusted PRs until internal-address blocking is implemented.
+**Note:** doc-lok has an SSRF guard enabled by default — it blocks private/loopback/link-local IP ranges. Use `--allow-private` to opt in for internal URLs. Don't run `doc-lok` on untrusted PRs with `--allow-private` enabled.
 
 ### 4. Condense → edit → restore round-trip
 
@@ -638,7 +753,28 @@ $EDITOR README.condensed.md
 doc-lok README.condensed.md --restore > README.final.md
 ```
 
-Lockfile resolution is **per markdown file's directory** by default. If `README.md` and `README.condensed.md` are in the same directory, they share `./doc-lok.json` automatically. If they're in different directories, pass `--lockfile` to share.
+Lockfile resolution is **per markdown file's directory** by default. If `README.md` and `README.condensed.md` are in the same directory, they share `./.doc-lok/lock.json` automatically. If they're in different directories, pass `--lockfile` to share.
+
+### 5. Inline specific sections
+
+When you need the content behind a link but not the entire page, `--inline --section <name>` is the most effective way to reduce token usage — a 50K-token doc becomes a ~2K-token section:
+
+```bash
+# First run: fetches the page, converts to Markdown, caches it.
+# Subsequent runs: HEAD-only (no body re-fetch).
+doc-lok README.md --inline --section authentication --quiet > inlined.md
+
+# Multiple sections from multiple pages
+doc-lok README.md --inline --section authentication --section api-reference --quiet > inlined.md
+
+# TOC only (default) — ~200 tokens per page, just section headings
+doc-lok README.md --inline --quiet > inlined.md
+
+# Full body — no token savings, but network/latency savings on repeat runs
+doc-lok README.md --inline --section all --quiet > inlined.md
+```
+
+The inline cache lives in `.doc-lok/cache/` alongside the lockfile. Converted Markdown and section indexes are cached on disk, so repeat runs with unchanged URLs are free (HEAD-only, no re-conversion).
 
 ---
 
@@ -698,7 +834,7 @@ If you ran `doc-lok README.md --lockfile` with **no path after the flag**, the p
 If you pass e.g. `--concurrency=4`, the parser sets `process.exitCode = 2` but **continues parsing**. Currently known bug. To be safe, check the exit code after the run.
 
 ### Lockfile is enormous
-There's no eviction — entries accumulate forever even for links that no longer appear in the source. To reset, just delete `doc-lok.json` and let the next run rebuild it.
+There's no eviction — entries accumulate forever even for links that no longer appear in the source. To reset, just delete `.doc-lok/lock.json` and let the next run rebuild it.
 
 ### Two `doc-lok` runs stomped each other
 The lockfile uses atomic write-rename to prevent corruption, but `updateEntry` is read-modify-write. If two `doc-lok` instances ran concurrently on the same project, the last writer wins. Don't parallelize `doc-lok` runs against one lockfile.
@@ -709,11 +845,12 @@ The lockfile uses atomic write-rename to prevent corruption, but `updateEntry` i
 
 ### By design
 - **HTTP(S) only.** Relative links, `mailto:`, `ftp:`, etc. are left untouched.
-- **No content inlining.** doc-lok condenses link *text*, not the page *content* the link points to. It validates whether remote resources changed but never injects their content into your prompt.
-- **No recursive following.** Only validates URLs found in the markdown — does not crawl linked pages.
-- **No authentication.** No `Authorization` headers; private URLs return `401`/`403`.
+- **No recursive following.** Only validates URLs found in the markdown — does not crawl linked pages. `--inline` fetches linked pages but does not follow links within them.
+- **No authentication.** No `Authorization` headers; private URLs return `401`/`403`. Use `--allow-private` for internal URLs that don't require auth.
+- **SSRF guard on by default.** Blocks loopback, link-local, and private IP ranges. Use `--allow-private` to opt in for internal URLs.
 - **Sequential validation.** One URL at a time. Slow for 100+ links. Use the library API for concurrency.
 - **Per-project lockfile.** There's no global cache. Use `--lockfile` or `DOC_LOK_LOCKFILE` to share.
+- **One level deep.** `--inline` fetches linked pages but does not recursively follow links within them.
 
 ### Heuristics (useful but approximate)
 - **Token estimate** uses the standard ~4 chars/token heuristic. Real token counts vary by tokenizer, content language, and tokenisation algorithm. Treat `tokensSaved` as a rough guide, not a billing figure.
@@ -722,7 +859,6 @@ The lockfile uses atomic write-rename to prevent corruption, but `updateEntry` i
 ### Known bugs (tracked in TODO.md)
 - **24-bit marker hash** (`hashUrl` returns 6 hex chars). Collisions are astronomically unlikely for small projects but theoretically possible after ~4 000 unique URLs.
 - **`global_tokens_saved` accounting** is mutated by `--check` runs in addition to `--condense` runs. Use `--check` sparingly if you care about the ROI number.
-- **No SSRF guard.** URLs in untrusted Markdown will be fetched from the host running `doc-lok`. Don't run in CI on untrusted PRs.
 - **`--lockfile` with no value** silently falls back to default resolution instead of erroring.
 - **Unknown flags** don't stop parsing.
 - **Reference definitions inside code blocks** are still validated (regex doesn't honour code-block state).
@@ -731,4 +867,4 @@ For the full list and remediation plan, see [`TODO.md`](../TODO.md) in the repo 
 
 ---
 
-*This document describes `doc-lok` v0.2.0. CLI flags, JSON shapes, and behaviour may change in subsequent minor versions — check the [CHANGELOG](../CHANGELOG.md) when upgrading.*
+*This document describes `doc-lok` v0.2.2. CLI flags, JSON shapes, and behaviour may change in subsequent minor versions — check the [CHANGELOG](../CHANGELOG.md) when upgrading.*

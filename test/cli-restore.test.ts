@@ -40,7 +40,7 @@ describe("CLI --restore", () => {
   }
 
   it("restores markers when --restore is passed", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 0,
@@ -54,7 +54,7 @@ describe("CLI --restore", () => {
         },
       },
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const { hashUrl } = await import("../src/state.js");
     const hash = hashUrl("https://example.com");
@@ -77,13 +77,13 @@ describe("CLI --restore", () => {
   });
 
   it("suppresses restore diagnostics with --quiet", async () => {
-    const lockPath = path.join(tmpDir, "doc-lok.json");
+    const lockPath = path.join(tmpDir, ".doc-lok", "lock.json");
     const lock = {
       version: 1,
       global_tokens_saved: 0,
       urls: {},
     };
-    await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true }); await fs.writeFile(lockPath, JSON.stringify(lock), "utf8");
 
     const mdPath = await writeMd("empty.md", "# Hello\n");
 

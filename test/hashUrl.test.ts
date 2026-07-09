@@ -2,9 +2,10 @@ import { describe, it, expect } from "vitest";
 import { hashUrl } from "../src/state.js";
 
 describe("hashUrl", () => {
-  it("returns a 6-character hex string", () => {
+  it("returns a 64-character hex string (full SHA-256)", () => {
     const h = hashUrl("https://example.com");
-    expect(h).toMatch(/^[a-f0-9]{6}$/);
+    expect(h).toMatch(/^[a-f0-9]{64}$/);
+    expect(h).toHaveLength(64);
   });
 
   it("is stable for the same input", () => {
